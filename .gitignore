@@ -1,0 +1,3 @@
+# Written by Claude Code when it loads a mod from a folder it watches.
+.claude-plugin/types/
+tsconfig.json
