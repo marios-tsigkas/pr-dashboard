@@ -1,6 +1,6 @@
 {
   "name": "pr-dashboard",
   "version": "0.1.0",
-  "description": "Band above the prompt with clickable GitHub review/PR counts, refreshed every 2 minutes via gh",
+  "description": "Band above the prompt with GitHub PR counts and news for the session's repo (refreshed every 15 minutes via gh), plus uncommitted changes in the band and a side pane",
   "types": "./types/index.d.ts"
 }

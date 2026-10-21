@@ -39,7 +39,14 @@ type Gh = {
   error?: string
   remote?: string | null
   numstat?: string
+  // Raw `git diff --numstat -z` output, for records the line form cannot write (renames).
+  numstatZ?: string
   untracked?: string
+  patches?: Record<string, string>
+  // Before the first commit / outside a repo / no way to open a browser.
+  noHead?: boolean
+  notRepo?: boolean
+  openFails?: boolean
 }
 
 const note = (login: string, createdAt: string, url: string, typename = 'User'): Note => ({
@@ -61,29 +68,55 @@ const hasNews = async (ui: Drawing, re: RegExp) => (await newsMatching(ui, re)).
 // URLs the band asked the host to open.
 const opened: string[] = []
 
+const ok = (stdout: string, exitCode = 0) => ({
+  value: { exitCode, stdout, stderr: exitCode === 0 ? '' : 'failed', isStdoutTruncated: false, isStderrTruncated: false },
+})
+
+// Answers what the mod runs on the host: git (remote, diff, rev-parse, ls-files), `open`, and `gh api graphql`.
 const fakeGh = (on: On, gh: Gh) => {
   const calls: string[][] = []
   on('process.run', ($, e) => {
-    if (e.argv[0] === 'open') {
+    const [cmd, sub] = e.argv
+    if (cmd === 'open' || cmd === 'xdg-open') {
+      if (gh.openFails) return ok('', 1)
       opened.push(e.argv[1] ?? '')
-      return { value: { exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+      return ok('')
     }
-    if (e.argv[0] === 'git' && e.argv[1] !== 'remote') {
-      const stdout = e.argv[1] === 'diff' ? (gh.numstat ?? '') : (gh.untracked ?? '')
-      return { value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
-    }
-    if (e.argv[0] === 'git') {
+    if (cmd === 'git' && sub === 'remote') {
       const remote = gh.remote === undefined ? 'https://github.com/o/r.git' : gh.remote
-      const value = remote === null ? { exitCode: 2, stdout: '', stderr: 'no origin' } : { exitCode: 0, stdout: `${remote}\n`, stderr: '' }
-      return { value: { ...value, isStdoutTruncated: false, isStderrTruncated: false } }
+      return remote === null ? ok('', 2) : ok(`${remote}\n`)
+    }
+    if (cmd === 'git' && sub === 'rev-parse') return gh.notRepo ? ok('', 128) : ok('true\n')
+    if (cmd === 'git' && sub === 'diff' && !e.argv.includes('--numstat')) {
+      // One file's patch: what `git diff [HEAD|--no-index] -- <file>` prints, keyed by the file.
+      const file = e.argv.at(-1) ?? ''
+      const patch = gh.patches?.[file] ?? ''
+      return ok(patch, e.argv.includes('--no-index') && patch !== '' ? 1 : 0)
+    }
+    if (cmd === 'git' && sub === 'diff') {
+      if (gh.notRepo || (gh.noHead && e.argv.includes('HEAD'))) return ok('', 128)
+      // Test data is written one `added\tdeleted\tpath` per line; git -z ends each with NUL.
+      return ok(gh.numstatZ ?? (gh.numstat ?? '').split('\n').filter(Boolean).map(line => `${line}\0`).join(''))
+    }
+    if (cmd === 'git' && sub === 'ls-files') {
+      return ok((gh.untracked ?? '').split('\n').filter(Boolean).map(line => `${line}\0`).join(''))
     }
     calls.push([...e.argv])
-    const value = gh.error
-      ? { exitCode: 1, stdout: '', stderr: gh.error }
-      : { exitCode: 0, stdout: JSON.stringify({
-          data: { viewer: { login: 'me' }, merged: { nodes: gh.merged ?? [] }, reviews: { nodes: gh.reviews }, assigned: { nodes: gh.assigned ?? [] }, mine: { nodes: gh.mine }, reviewed: { nodes: gh.reviewed ?? [] } },
-        }), stderr: '' }
-    return { value: { ...value, isStdoutTruncated: false, isStderrTruncated: false } }
+    if (gh.error) return { value: { exitCode: 1, stdout: '', stderr: gh.error, isStdoutTruncated: false, isStderrTruncated: false } }
+    const mine = gh.mine
+    return ok(
+      JSON.stringify({
+        data: {
+          viewer: { login: 'me' },
+          merged: { nodes: gh.merged ?? [] },
+          reviews: { issueCount: gh.reviews.length, nodes: gh.reviews },
+          assigned: { issueCount: (gh.assigned ?? []).length, nodes: gh.assigned ?? [] },
+          // The search asks for draft:false, so GitHub's total leaves drafts out.
+          mine: { issueCount: mine.filter(pr => !pr.isDraft).length, nodes: mine },
+          reviewed: { nodes: gh.reviewed ?? [] },
+        },
+      }),
+    )
   })
   on('session.start', ($, e) => ({ cwd: e.cwd }))
   return calls
@@ -462,8 +495,9 @@ test('the Uncommitted pane lists every changed file; ⧉ on the band opens it', 
   await empty.unmount()
 
   gh.numstat = Array.from({ length: 8 }, (_, i) => `${i + 1}\t0\tsrc/f${i}.ts`).join('\n')
-  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
-  await clock.advance(1)
+  const reread = await $.ui.mount({ plugin: 'pr-dashboard', surface: 'desktop', ...PANE })
+  await reread.press({ key: 'pane-refresh' })
+  await reread.unmount()
 
   for (const surface of ['terminal', 'desktop'] as const) {
     const pane = await $.ui.mount({ plugin: 'pr-dashboard', surface, ...PANE })
@@ -479,4 +513,299 @@ test('the Uncommitted pane lists every changed file; ⧉ on the band opens it', 
   await band.press({ key: 'changes-pane' })
   expect(opens).toEqual(['uncommitted'])
   await band.unmount()
+})
+
+const DESKTOP = { cwd: '/', surface: 'desktop', isInteractive: true } as const
+
+test('a second session within the cache window reuses it: no second GitHub call', async ($, on) => {
+  const clock = mock.clock(on)
+  mock.store(on)
+  const calls = fakeGh(on, { reviews: [pr(1)], mine: [] })
+
+  await $.session.start(DESKTOP)
+  await clock.advance(1)
+  await clock.advance(60 * 1000)
+  await $.session.start(DESKTOP)
+  await clock.advance(1)
+  expect(calls.length).toBe(1)
+})
+
+test('a session starting during a rate-limit pause still draws the last data', async ($, on) => {
+  const clock = mock.clock(on)
+  const at = clock.now()
+  // What another session left behind: an expired cache, and a pause running another 10 minutes.
+  const totals = { reviews: 2, assigned: 0, mine: 0 }
+  const data = { merged: [], reviews: [], assigned: [], mine: [], reviewed: [], totals }
+  mock.store(on, { 'cache-v5:o/r': { at: at - REFRESH_MS, data }, backoffUntil: at + 10 * 60 * 1000 })
+  const gh: Gh = { reviews: [pr(1), pr(2), pr(3)], mine: [] }
+  const calls = fakeGh(on, gh)
+
+  await $.session.start(DESKTOP)
+  await clock.advance(1)
+  expect(calls.length).toBe(0)
+  const ui = await $.ui.mount({ plugin: 'pr-dashboard', surface: 'desktop', ...BAND })
+  expect(await ui.find({ type: 'Link', text: /Reviews 2$/ })).toBeDefined()
+
+  // ↻ fetches anyway; it succeeds and lifts the pause.
+  await ui.press({ key: 'refresh' })
+  expect(calls.length).toBe(1)
+  expect(await ui.find({ type: 'Link', text: /Reviews 3$/ })).toBeDefined()
+  await ui.unmount()
+})
+
+test('review-request news goes once the PR no longer asks for my review', async ($, on) => {
+  const clock = mock.clock(on)
+  mock.store(on)
+  const gh: Gh = { reviews: [], mine: [] }
+  fakeGh(on, gh)
+
+  await $.session.start(DESKTOP)
+  await clock.advance(1)
+  gh.reviews = [pr(3), pr(4)]
+  await clock.advance(REFRESH_MS)
+  gh.reviews = [pr(4)]
+  await clock.advance(REFRESH_MS)
+
+  const ui = await $.ui.mount({ plugin: 'pr-dashboard', surface: 'desktop', ...BAND })
+  expect(await hasNews(ui, /review requested #3/)).toBe(false)
+  expect(await hasNews(ui, /review requested #4/)).toBe(true)
+  expect(await ui.find({ type: 'Link', text: /Reviews 1 \(\+1 new\)/ })).toBeDefined()
+  await ui.unmount()
+})
+
+test('a -p run (not interactive) polls nothing', async ($, on) => {
+  const clock = mock.clock(on)
+  mock.store(on)
+  const seen: string[] = []
+  on('process.run', ($, e) => {
+    seen.push(e.argv[0] ?? '')
+    return ok('')
+  })
+  on('session.start', ($, e) => ({ cwd: e.cwd }))
+
+  on('tool.call', () => ({ result: {} as never }))
+  await $.session.start({ cwd: '/', surface: null, isInteractive: false })
+  await $.tool.call({ tool: 'Edit', file_path: '/x', old_string: 'a', new_string: 'b' })
+  await clock.advance(REFRESH_MS * 2)
+  expect(seen).toEqual([])
+})
+
+test('before the first commit, staged and untracked files still show; outside a repo nothing does', async ($, on) => {
+  const clock = mock.clock(on)
+  mock.store(on)
+  const gh: Gh = { reviews: [], mine: [], noHead: true, numstat: '5\t0\tsrc/a.ts', untracked: 'notes/\n' }
+  fakeGh(on, gh)
+  on('tool.call', () => ({ result: {} as never }))
+
+  await $.session.start(DESKTOP)
+  await clock.advance(1)
+  let ui = await $.ui.mount({ plugin: 'pr-dashboard', surface: 'desktop', ...BAND })
+  expect(await ui.find({ type: 'Text', text: /Uncommitted: 2 files/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: 'notes/' })).toBeDefined()
+  await ui.unmount()
+
+  gh.notRepo = true
+  await $.tool.call({ tool: 'Edit', file_path: '/x', old_string: 'a', new_string: 'b' })
+  await clock.advance(1)
+  ui = await $.ui.mount({ plugin: 'pr-dashboard', surface: 'desktop', ...BAND })
+  expect(await ui.find({ text: /Uncommitted/ })).toBeUndefined()
+  await ui.unmount()
+})
+
+test('a rename shows as old → new', async ($, on) => {
+  const clock = mock.clock(on)
+  mock.store(on)
+  fakeGh(on, { reviews: [], mine: [], numstatZ: '2\t1\t\0src/old.ts\0src/new.ts\0' })
+
+  await $.session.start(DESKTOP)
+  await clock.advance(1)
+  const ui = await $.ui.mount({ plugin: 'pr-dashboard', surface: 'desktop', ...BAND })
+  expect(await ui.find({ type: 'Text', text: 'src/old.ts → src/new.ts' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /Uncommitted: 1 file$/ })).toBeDefined()
+  await ui.unmount()
+})
+
+test('a news item stays when its link cannot be opened', async ($, on) => {
+  const clock = mock.clock(on)
+  mock.store(on)
+  const gh: Gh = { reviews: [], mine: [], openFails: true }
+  fakeGh(on, gh)
+
+  await $.session.start(DESKTOP)
+  await clock.advance(1)
+  gh.reviews = [pr(3)]
+  await clock.advance(REFRESH_MS)
+
+  const ui = await $.ui.mount({ plugin: 'pr-dashboard', surface: 'desktop', ...BAND })
+  await ui.press({ key: 'news:review-requested:https://github.com/o/r/pull/3', link: { href: 'https://github.com/o/r/pull/3' } })
+  expect(await hasNews(ui, /review requested #3/)).toBe(true)
+  await ui.unmount()
+})
+
+test('without required reviews (no reviewDecision), an approving review still counts as Approved', async ($, on) => {
+  const clock = mock.clock(on)
+  mock.store(on)
+  const approval: Review = {
+    author: { __typename: 'User', login: 'alex' },
+    state: 'APPROVED',
+    submittedAt: '2026-10-15T11:30:50Z',
+    url: 'https://github.com/o/r/pull/7#review-1',
+  }
+  fakeGh(on, { reviews: [], mine: [{ ...pr(7), reviews: { nodes: [approval] } }] })
+
+  await $.session.start(DESKTOP)
+  await clock.advance(1)
+  const ui = await $.ui.mount({ plugin: 'pr-dashboard', surface: 'desktop', ...BAND })
+  expect(await ui.find({ type: 'Link', text: /Approved 1/ })).toBeDefined()
+  await ui.unmount()
+})
+
+test('the desktop app (an SDK session: not interactive, no surface at start) polls once the band is drawn', async ($, on) => {
+  const clock = mock.clock(on)
+  mock.store(on)
+  const calls = fakeGh(on, { reviews: [pr(1), pr(2)], mine: [] })
+
+  await $.session.start({ cwd: '/', surface: null, isInteractive: false })
+  await clock.advance(1)
+  expect(calls.length).toBe(0)
+
+  // The desktop draws the band (before any data): that starts polling.
+  // Nothing to draw yet, so the hook hands the band back to the engine, which the kit has none of.
+  await $.ui.mount({ plugin: 'pr-dashboard', surface: 'desktop', ...BAND }).catch(() => undefined)
+  await clock.advance(1)
+  expect(calls.length).toBe(1)
+
+  const ui = await $.ui.mount({ plugin: 'pr-dashboard', surface: 'desktop', ...BAND })
+  expect(await ui.find({ type: 'Link', text: /Reviews 2$/ })).toBeDefined()
+  await ui.unmount()
+
+  await clock.advance(REFRESH_MS + 1)
+  expect(calls.length).toBe(2)
+})
+
+const patchOf = (file: string, hunks: string) =>
+  `diff --git a/${file} b/${file}\nindex 1111111..2222222 100644\n--- a/${file}\n+++ b/${file}\n${hunks}\n`
+
+test('clicking a file in the pane shows its diff below it; clicking again hides it', async ($, on) => {
+  const clock = mock.clock(on)
+  mock.store(on)
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('command.register', ($, e) => ({ value: { command: e.name } }))
+  fakeGh(on, {
+    reviews: [],
+    mine: [],
+    numstat: '1\t1\tsrc/a.ts',
+    untracked: 'notes.md\n',
+    patches: {
+      'src/a.ts': patchOf('src/a.ts', '@@ -1,2 +1,2 @@\n const a = 1\n-const b = 2\n+const b = 3'),
+      'notes.md': 'diff --git a/notes.md b/notes.md\nnew file mode 100644\n--- /dev/null\n+++ b/notes.md\n@@ -0,0 +1 @@\n+hello',
+    },
+  })
+
+  await $.session.start(DESKTOP)
+  await clock.advance(1)
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const pane = await $.ui.mount({ plugin: 'pr-dashboard', surface, ...PANE })
+    await pane.press({ key: 'diff:src/a.ts' })
+    const code = await pane.find({ type: 'Code' })
+    // Hunks only: git's header lines are dropped so the diff parses.
+    expect(code?.text).toBe('@@ -1,2 +1,2 @@\n const a = 1\n-const b = 2\n+const b = 3')
+    // Coloured as TypeScript, from the .ts extension.
+    expect(code?.props.language).toBe('typescript')
+    await pane.press({ key: 'diff:notes.md' })
+    expect((await pane.findAll({ type: 'Code' })).map(c => c.text)).toContain('@@ -0,0 +1 @@\n+hello')
+    await pane.press({ key: 'diff:src/a.ts' })
+    await pane.press({ key: 'diff:notes.md' })
+    expect(await pane.find({ type: 'Code' })).toBeUndefined()
+    await pane.unmount()
+  }
+})
+
+test('clicking a file in the band opens the pane, wide, with its diff shown', async ($, on) => {
+  const clock = mock.clock(on)
+  mock.store(on)
+  const opens: { id: string; columns?: number }[] = []
+  on('ui.open', ($, e) => {
+    opens.push({ id: e.id, columns: e.columns })
+    return { value: { isPlaced: true } }
+  })
+  on('command.register', ($, e) => ({ value: { command: e.name } }))
+  fakeGh(on, {
+    reviews: [],
+    mine: [],
+    numstat: '1\t0\tsrc/a.ts',
+    patches: { 'src/a.ts': patchOf('src/a.ts', '@@ -1 +1,2 @@\n x\n+y') },
+  })
+
+  await $.session.start(DESKTOP)
+  await clock.advance(1)
+  opens.length = 0
+  const band = await $.ui.mount({ plugin: 'pr-dashboard', surface: 'desktop', ...BAND })
+  await band.press({ key: 'band-file:src/a.ts' })
+  // Code needs more room than a file list: the pane asks for 100 columns.
+  expect(opens).toEqual([{ id: 'uncommitted', columns: 100 }])
+  await band.unmount()
+  const pane = await $.ui.mount({ plugin: 'pr-dashboard', surface: 'desktop', ...PANE })
+  expect((await pane.find({ type: 'Code' }))?.text).toBe('@@ -1 +1,2 @@\n x\n+y')
+  await pane.unmount()
+})
+
+test('a long diff draws whole hunks up to the cap and counts the rest', async ($, on) => {
+  const clock = mock.clock(on)
+  mock.store(on)
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('command.register', ($, e) => ({ value: { command: e.name } }))
+  // Three hunks of 201 lines each (header + 200). Two would be 402 > 400, so only the first is kept.
+  const hunk = (n: number) => [`@@ -${n},200 +${n},200 @@`, ...Array.from({ length: 200 }, (_, i) => ` line ${n + i}`)].join('\n')
+  fakeGh(on, {
+    reviews: [],
+    mine: [],
+    numstat: '3\t3\tbig.ts',
+    patches: { 'big.ts': patchOf('big.ts', [hunk(1), hunk(1000), hunk(2000)].join('\n')) },
+  })
+
+  await $.session.start(DESKTOP)
+  await clock.advance(1)
+  const pane = await $.ui.mount({ plugin: 'pr-dashboard', surface: 'desktop', ...PANE })
+  await pane.press({ key: 'diff:big.ts' })
+  const code = await pane.find({ type: 'Code' })
+  expect(code?.text?.split('\n').length).toBe(201)
+  expect(code?.text?.startsWith('@@ -1,200')).toBe(true)
+  expect(await pane.find({ type: 'Text', text: '+402 more lines' })).toBeDefined()
+  await pane.unmount()
+})
+
+test('diff colouring follows the file: PHP, Python, and no language for an unknown extension', async ($, on) => {
+  const clock = mock.clock(on)
+  mock.store(on)
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('command.register', ($, e) => ({ value: { command: e.name } }))
+  const hunk = '@@ -1 +1 @@\n-a\n+b'
+  fakeGh(on, {
+    reviews: [],
+    mine: [],
+    numstat: '1\t1\tapp/Http/User.php\n1\t1\ttools/run.py\n1\t1\tconfig.unknownext',
+    patches: {
+      'app/Http/User.php': patchOf('app/Http/User.php', hunk),
+      'tools/run.py': patchOf('tools/run.py', hunk),
+      'config.unknownext': patchOf('config.unknownext', hunk),
+    },
+  })
+
+  await $.session.start(DESKTOP)
+  await clock.advance(1)
+  const pane = await $.ui.mount({ plugin: 'pr-dashboard', surface: 'desktop', ...PANE })
+  for (const [file, language] of [
+    ['app/Http/User.php', 'php'],
+    ['tools/run.py', 'python'],
+    ['config.unknownext', undefined],
+  ] as const) {
+    await pane.press({ key: `diff:${file}` })
+    // One diff open at a time here, so the only Code is this file's.
+    const code = await pane.find({ type: 'Code' })
+    expect(code?.props.language).toBe(language)
+    expect(code?.props.path).toBe(file)
+    await pane.press({ key: `diff:${file}` })
+  }
+  await pane.unmount()
 })
