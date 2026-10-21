@@ -1,0 +1,6 @@
+{
+  "name": "marios-tsigkas",
+  "owner": { "name": "Marios Tsigkas" },
+  "description": "Claude Code mods by Marios Tsigkas",
+  "plugins": [{ "name": "pr-dashboard", "source": "./" }]
+}
