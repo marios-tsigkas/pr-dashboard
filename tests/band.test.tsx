@@ -522,6 +522,11 @@ test('the Uncommitted pane lists every changed file; ⧉ on the band opens it', 
   const band = await $.ui.mount({ plugin: 'pr-dashboard', surface: 'desktop', ...BAND })
   await band.press({ key: 'changes-pane' })
   expect(opens).toEqual(['uncommitted'])
+  // The band shows 6 of the 8; "+2 more" opens the pane, which lists them all.
+  opens.length = 0
+  expect((await band.find({ key: 'changes-more' }))?.text).toBe('+2 more')
+  await band.press({ key: 'changes-more' })
+  expect(opens).toEqual(['uncommitted'])
   await band.unmount()
 })
 

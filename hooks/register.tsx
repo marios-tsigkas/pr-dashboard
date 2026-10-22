@@ -1006,7 +1006,10 @@ export const register: Register = on => {
                 </Box>
               ))}
             {isOpen && changed.length > MAX_CHANGES_SHOWN && (
-              <Text dimColor size="caption">+{changed.length - MAX_CHANGES_SHOWN} more</Text>
+              // The pane lists every file.
+              <Button key="changes-more" plain onPress={() => void openChangesPane($)}>
+                <Text dimColor size="caption">+{changed.length - MAX_CHANGES_SHOWN} more</Text>
+              </Button>
             )}
           </Box>
         )}
