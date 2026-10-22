@@ -621,6 +621,77 @@ const DIFF_PANE_COLUMNS = 100
 const openChangesPane = ($: EngineInterface, { isWide = false } = {}) =>
   $.ui.open({ ...CHANGES_PANE, ...(isWide && { columns: DIFF_PANE_COLUMNS }) }).catch(() => undefined)
 
+// A diff's hunks as runs of like lines, each numbered from its first line: removed lines by the
+// old file, the rest by the new. Drawn as plain code, a run keeps its language's colours.
+type DiffRun = { header: string } | { kind: 'context' | 'added' | 'removed'; start: number; lines: string[] }
+const toRuns = (source: string): DiffRun[] => {
+  const runs: DiffRun[] = []
+  let oldLine = 0
+  let newLine = 0
+  for (const line of source.split('\n')) {
+    const hunk = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(line)
+    if (hunk) {
+      oldLine = Number(hunk[1])
+      newLine = Number(hunk[2])
+      runs.push({ header: line })
+      continue
+    }
+    const kind = line.startsWith('+') ? 'added' : line.startsWith('-') ? 'removed' : line.startsWith(' ') || line === '' ? 'context' : null
+    // `\ No newline at end of file` and anything else unexpected.
+    if (kind === null) continue
+    const number = kind === 'removed' ? oldLine++ : kind === 'added' ? newLine++ : (oldLine++, newLine++)
+    const last = runs.at(-1)
+    if (last && 'kind' in last && last.kind === kind) last.lines.push(line.slice(1))
+    else runs.push({ kind, start: number, lines: [line.slice(1)] })
+  }
+
+  return runs
+}
+
+type DiffRunsProps = {
+  diff: Diff
+  path: string
+  Box: Elements['desktop']['Box'] | Elements['vscode']['Box'] | Elements['mobile']['Box'] | Elements['terminal']['Box']
+  Code: Elements['desktop']['Code'] | Elements['vscode']['Code'] | Elements['mobile']['Code'] | Elements['terminal']['Code']
+  Text: Elements['desktop']['Text'] | Elements['vscode']['Text'] | Elements['mobile']['Text'] | Elements['terminal']['Text']
+}
+
+// The desktop draws a `format: 'diff'` Code in add/remove colours only, so there a diff is drawn
+// as runs of plain code: a coloured bar outside the code marks added and removed lines.
+const DiffRuns = ({ diff, path, Box, Code, Text }: DiffRunsProps) => (
+  <Box flexDirection="column" width="100%" overflow="hidden">
+    {toRuns(diff.source).map((run, i) =>
+      'header' in run ? (
+        <Text key={`hunk:${i}`} dimColor size="caption" wrap="truncate-end">
+          {run.header}
+        </Text>
+      ) : (
+        <Box
+          key={`run:${i}`}
+          flexDirection="row"
+          {...(run.kind !== 'context' && { backgroundColor: run.kind === 'added' ? 'diffAddedDimmed' : 'diffRemovedDimmed' })}
+        >
+          <Box
+            width={1}
+            flexShrink={0}
+            {...(run.kind !== 'context' && { backgroundColor: run.kind === 'added' ? 'diffAdded' : 'diffRemoved' })}
+          />
+          <Box flexGrow={1} minWidth={0} overflow="hidden" paddingLeft={1}>
+            <Code
+              key={`code:${path}:${i}`}
+              source={run.lines.join('\n')}
+              path={path}
+              startLine={run.start}
+              wrap="truncate-end"
+              {...(languageOf(path) && { language: languageOf(path) })}
+            />
+          </Box>
+        </Box>
+      ),
+    )}
+  </Box>
+)
+
 type ChangeStatProps = {
   change: Change
   Box: Elements['terminal']['Box'] | Elements['desktop']['Box'] | Elements['vscode']['Box'] | Elements['mobile']['Box']
@@ -656,10 +727,8 @@ const start = async ($: EngineInterface) => {
     void refresh($)
   })
   void refresh($)
-  void refreshChanges($).then(async () => {
-    // Unasked, the surface places it only with room for a sidebar; /changes or ⧉ always does.
-    if (((await read($, changes)) ?? []).length > 0) void openChangesPane($)
-  })
+  // The pane opens only when asked: a file, ⧉ or /changes.
+  void refreshChanges($)
 }
 
 export const register: Register = on => {
@@ -718,7 +787,8 @@ export const register: Register = on => {
             <Box
               key={`pane:${change.path}`}
               flexDirection="column"
-              {...(isExpanded && { borderStyle: 'round', borderDimColor: true, paddingX: 1, marginY: 1 })}
+              // Held to the pane's width, so one long line cannot push the card past its edge.
+              {...(isExpanded && { borderStyle: 'round', borderDimColor: true, paddingX: 1, marginY: 1, width: '100%', overflow: 'hidden' })}
             >
               <Box flexDirection="row" columnGap={1}>
                 <ChangeStat change={change} Box={Box} Text={Text} />
@@ -731,12 +801,16 @@ export const register: Register = on => {
                   )}
                 </Button>
               </Box>
-              {isExpanded && diff && diff.source !== '' && (
-                // Long lines wrap under the gutter; tokens are coloured by the (new) file's language.
+              {isExpanded && diff && diff.source !== '' && e.surface !== 'terminal' && (
+                <DiffRuns diff={diff} path={filesOf(change).at(-1) ?? change.path} Box={Box} Code={Code} Text={Text} />
+              )}
+              {isExpanded && diff && diff.source !== '' && e.surface === 'terminal' && (
+                // One row per line, cut at the edge; tokens are coloured by the (new) file's language.
                 <Code
                   key={`code:${change.path}`}
                   source={diff.source}
                   format="diff"
+                  wrap="truncate-end"
                   path={filesOf(change).at(-1) ?? change.path}
                   {...(languageOf(filesOf(change).at(-1) ?? change.path) && {
                     language: languageOf(filesOf(change).at(-1) ?? change.path),

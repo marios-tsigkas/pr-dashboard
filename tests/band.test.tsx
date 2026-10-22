@@ -488,8 +488,15 @@ test('the Uncommitted pane lists every changed file; ⧉ on the band opens it', 
   })
   on('command.register', ($, e) => ({ value: { command: e.name } }))
 
+  gh.numstat = '1\t0\tsrc/a.ts'
   await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
   await clock.advance(1)
+  // Changes alone open nothing: the pane waits for a click.
+  expect(opens).toEqual([])
+  gh.numstat = ''
+  const first = await $.ui.mount({ plugin: 'pr-dashboard', surface: 'desktop', ...PANE })
+  await first.press({ key: 'pane-refresh' })
+  await first.unmount()
   const empty = await $.ui.mount({ plugin: 'pr-dashboard', surface: 'desktop', ...PANE })
   expect(await empty.find({ type: 'Text', text: 'No uncommitted changes' })).toBeDefined()
   await empty.unmount()
@@ -707,13 +714,22 @@ test('clicking a file in the pane shows its diff below it; clicking again hides 
   for (const surface of ['terminal', 'desktop'] as const) {
     const pane = await $.ui.mount({ plugin: 'pr-dashboard', surface, ...PANE })
     await pane.press({ key: 'diff:src/a.ts' })
-    const code = await pane.find({ type: 'Code' })
-    // Hunks only: git's header lines are dropped so the diff parses.
-    expect(code?.text).toBe('@@ -1,2 +1,2 @@\n const a = 1\n-const b = 2\n+const b = 3')
-    // Coloured as TypeScript, from the .ts extension.
-    expect(code?.props.language).toBe('typescript')
+    const codes = await pane.findAll({ type: 'Code' })
+    if (surface === 'terminal') {
+      // Hunks only: git's header lines are dropped so the diff parses.
+      expect(codes.map(c => c.text)).toEqual(['@@ -1,2 +1,2 @@\n const a = 1\n-const b = 2\n+const b = 3'])
+    } else {
+      // Runs of plain code, numbered: removed lines by the old file, the rest by the new.
+      expect(codes.map(c => [c.text, c.props.startLine])).toEqual([['const a = 1', 1], ['const b = 2', 2], ['const b = 3', 2]])
+    }
+    for (const code of codes) {
+      // Coloured as TypeScript, from the .ts extension.
+      expect(code.props.language).toBe('typescript')
+      // A long line is cut at the edge rather than wrapped back under the markers.
+      expect(code.props.wrap).toBe('truncate-end')
+    }
     await pane.press({ key: 'diff:notes.md' })
-    expect((await pane.findAll({ type: 'Code' })).map(c => c.text)).toContain('@@ -0,0 +1 @@\n+hello')
+    expect((await pane.findAll({ type: 'Code' })).map(c => c.text)).toContain(surface === 'terminal' ? '@@ -0,0 +1 @@\n+hello' : 'hello')
     await pane.press({ key: 'diff:src/a.ts' })
     await pane.press({ key: 'diff:notes.md' })
     expect(await pane.find({ type: 'Code' })).toBeUndefined()
@@ -746,7 +762,7 @@ test('clicking a file in the band opens the pane, wide, with its diff shown', as
   expect(opens).toEqual([{ id: 'uncommitted', columns: 100 }])
   await band.unmount()
   const pane = await $.ui.mount({ plugin: 'pr-dashboard', surface: 'desktop', ...PANE })
-  expect((await pane.find({ type: 'Code' }))?.text).toBe('@@ -1 +1,2 @@\n x\n+y')
+  expect((await pane.findAll({ type: 'Code' })).map(c => c.text)).toEqual(['x', 'y'])
   await pane.unmount()
 })
 
@@ -766,7 +782,8 @@ test('a long diff draws whole hunks up to the cap and counts the rest', async ($
 
   await $.session.start(DESKTOP)
   await clock.advance(1)
-  const pane = await $.ui.mount({ plugin: 'pr-dashboard', surface: 'desktop', ...PANE })
+  // The terminal draws the diff as one Code, so its lines are countable.
+  const pane = await $.ui.mount({ plugin: 'pr-dashboard', surface: 'terminal', ...PANE })
   await pane.press({ key: 'diff:big.ts' })
   const code = await pane.find({ type: 'Code' })
   expect(code?.text?.split('\n').length).toBe(201)
