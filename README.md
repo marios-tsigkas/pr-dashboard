@@ -8,6 +8,8 @@ A Claude Code mod that shows, above the prompt, your GitHub PRs for the session'
 
 ## Install
 
+Needs Claude Code 2.1.299 or later (`claude --version`; `claude update` to upgrade). Older versions install it but it fails to load or draws nothing.
+
 Type at a Claude Code terminal prompt:
 
 ```
