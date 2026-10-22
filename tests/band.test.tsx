@@ -99,7 +99,10 @@ const fakeGh = (on: On, gh: Gh) => {
       return ok(gh.numstatZ ?? (gh.numstat ?? '').split('\n').filter(Boolean).map(line => `${line}\0`).join(''))
     }
     if (cmd === 'git' && sub === 'ls-files') {
-      return ok((gh.untracked ?? '').split('\n').filter(Boolean).map(line => `${line}\0`).join(''))
+      // `--directory` would print a wholly new folder once, as `folder/`.
+      const paths = (gh.untracked ?? '').split('\n').filter(Boolean)
+      const listed = e.argv.includes('--directory') ? [...new Set(paths.map(path => path.replace(/\/[^/]+$/, '/')))] : paths
+      return ok(listed.map(line => `${line}\0`).join(''))
     }
     calls.push([...e.argv])
     if (gh.error) return { value: { exitCode: 1, stdout: '', stderr: gh.error, isStdoutTruncated: false, isStderrTruncated: false } }
@@ -825,4 +828,20 @@ test('diff colouring follows the file: PHP, Python, and no language for an unkno
     await pane.press({ key: `diff:${file}` })
   }
   await pane.unmount()
+})
+
+test('files in a new folder are listed one by one, not as the folder', async ($, on) => {
+  const clock = mock.clock(on)
+  mock.store(on)
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('command.register', ($, e) => ({ value: { command: e.name } }))
+  fakeGh(on, { reviews: [], mine: [], numstat: '', untracked: 'src/evals/a.ts\nsrc/evals/b.ts\n' })
+
+  await $.session.start(DESKTOP)
+  await clock.advance(1)
+  const band = await $.ui.mount({ plugin: 'pr-dashboard', surface: 'desktop', ...BAND })
+  expect(await band.find({ type: 'Text', text: 'src/evals/a.ts' })).toBeDefined()
+  expect(await band.find({ type: 'Text', text: 'src/evals/b.ts' })).toBeDefined()
+  expect(await band.find({ key: 'band-file:src/evals/' })).toBeUndefined()
+  await band.unmount()
 })

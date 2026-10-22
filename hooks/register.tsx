@@ -497,7 +497,8 @@ const readChanges = async ($: EngineInterface): Promise<Change[] | null> => {
     if (inside?.exitCode !== 0) return null
     diff = await run(['git', 'diff', '--cached', '--numstat', '-z'])
   }
-  const untracked = await run(['git', 'ls-files', '--others', '--exclude-standard', '--directory', '--no-empty-directory', '-z'])
+  // Each new file on its own row, even inside a new folder.
+  const untracked = await run(['git', 'ls-files', '--others', '--exclude-standard', '-z'])
   const tracked = diff?.exitCode === 0 ? parseNumstat(diff.stdout) : []
   const added = (untracked?.exitCode === 0 ? untracked.stdout.split('\0').filter(Boolean) : []).map(path => ({
     path,
@@ -547,8 +548,6 @@ const toDiff = (out: string): Diff => {
 const readDiff = async ($: EngineInterface, change: Change): Promise<Diff> => {
   const files = filesOf(change)
   const [file = change.path] = files.slice(-1)
-  // A new folder is listed, not diffed.
-  if (change.isNew && file.endsWith('/')) return { source: '', omittedLines: 0 }
   const run = (argv: string[]) => $.process.run(argv).catch(() => null)
   // `--` keeps a path from reading as an option. An untracked file diffs against nothing
   // (`--no-index` exits 1 when they differ); before the first commit there is no HEAD.
@@ -818,7 +817,7 @@ export const register: Register = on => {
                 />
               )}
               {isExpanded && diff && diff.source === '' && (
-                <Text dimColor size="caption">No text diff (binary, or a new folder)</Text>
+                <Text dimColor size="caption">No text diff (binary, or empty)</Text>
               )}
               {isExpanded && diff && diff.omittedLines > 0 && (
                 <Text dimColor size="caption">+{diff.omittedLines} more lines</Text>
