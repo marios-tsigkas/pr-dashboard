@@ -14,7 +14,14 @@ Type at a Claude Code terminal prompt:
 /plugin install pr-dashboard --marketplace marios-tsigkas/pr-dashboard
 ```
 
-Answer `y` to add the marketplace, then pick a scope (user is first). It needs the [GitHub CLI](https://cli.github.com) logged in (`gh auth login`) and `git`.
+Answer `y` to add the marketplace, then pick a scope (user is first). Or from a shell:
+
+```bash
+claude plugin marketplace add marios-tsigkas/pr-dashboard
+claude plugin install pr-dashboard@marios-tsigkas
+```
+
+It needs the [GitHub CLI](https://cli.github.com) logged in (`gh auth login`) and `git`.
 
 ## Develop
 
