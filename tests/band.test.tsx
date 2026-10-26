@@ -112,7 +112,7 @@ const fakeGh = (on: On, gh: Gh) => {
         data: {
           viewer: { login: 'me' },
           merged: { nodes: gh.merged ?? [] },
-          reviews: { issueCount: gh.reviews.length, nodes: gh.reviews },
+          reviews: { issueCount: gh.reviews.filter(pr => !pr.isDraft).length, nodes: gh.reviews },
           assigned: { issueCount: (gh.assigned ?? []).length, nodes: gh.assigned ?? [] },
           // The search asks for draft:false, so GitHub's total leaves drafts out.
           mine: { issueCount: mine.filter(pr => !pr.isDraft).length, nodes: mine },
@@ -128,18 +128,19 @@ const fakeGh = (on: On, gh: Gh) => {
 test('one gh call per refresh; flags new review requests and approvals', async ($, on) => {
   const clock = mock.clock(on)
   mock.store(on)
-  const gh: Gh = { reviews: [pr(1), pr(2)], mine: [pr(7), pr(8, null, 'FAILURE', true), pr(9, null, 'FAILURE')] }
+  const gh: Gh = { reviews: [pr(1), pr(2), pr(5, null, 'SUCCESS', true)], mine: [pr(7), pr(8, null, 'FAILURE', true), pr(9, null, 'FAILURE')] }
   const calls = fakeGh(on, gh)
 
   await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
   await clock.advance(1)
   expect(calls.length).toBe(1)
   expect(calls[0]?.slice(0, 3)).toEqual(['gh', 'api', 'graphql'])
+  expect(calls[0]?.join(' ')).toContain('draft:false review-requested:@me')
 
   for (const surface of ['terminal', 'desktop'] as const) {
     const ui = await $.ui.mount({ plugin: 'pr-dashboard', surface, ...BAND })
     expect(await ui.find({ type: 'Link', text: /Reviews 2$/ })).toBeDefined()
-    // The draft (#8) is in no count; the one failing PR links straight to itself.
+    // Drafts (#5 asks for my review, #8 is mine) are in no count; the one failing PR links straight to itself.
     expect(await ui.find({ type: 'Link', text: /My PRs 2/ })).toBeDefined()
     expect(await ui.find({ type: 'Link', text: 'https://github.com/o/r/pull/9✗ CI 1' })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: 'New:' })).toBeUndefined()
@@ -147,7 +148,7 @@ test('one gh call per refresh; flags new review requests and approvals', async (
     await ui.unmount()
   }
 
-  gh.reviews = [pr(1), pr(2), pr(3)]
+  gh.reviews = [pr(1), pr(2), pr(3), pr(5, null, 'SUCCESS', true)]
   gh.assigned = [pr(30), { ...pr(31), author: { login: 'me' } }]
   gh.mine = [pr(7, 'APPROVED'), pr(8), pr(9, null, 'FAILURE')]
   await clock.advance(REFRESH_MS)
@@ -158,6 +159,8 @@ test('one gh call per refresh; flags new review requests and approvals', async (
     expect(await ui.find({ type: 'Link', text: /Reviews 3 \(\+1 new\)/ })).toBeDefined()
     expect(await ui.find({ type: 'Link', text: /Approved 1/ })).toBeDefined()
     expect(await hasNews(ui, /review requested #3/)).toBe(true)
+    // A draft asking for review is no news either.
+    expect(await hasNews(ui, /#5/)).toBe(false)
     expect(await hasNews(ui, /approved #7/)).toBe(true)
     // Self-assigned #31 counts but is no news.
     expect(await ui.find({ type: 'Link', text: /Assigned 2/ })).toBeDefined()
@@ -256,7 +259,7 @@ test('scopes counts, links and query to the session repo; no GitHub remote means
 
   await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
   await clock.advance(1)
-  expect(calls[0]?.join(' ')).toContain('repo:acme/web review-requested:@me')
+  expect(calls[0]?.join(' ')).toContain('repo:acme/web draft:false review-requested:@me')
 
   let ui = await $.ui.mount({ plugin: 'pr-dashboard', surface: 'desktop', ...BAND })
   expect(await ui.find({ type: 'Text', text: 'web' })).toBeDefined()

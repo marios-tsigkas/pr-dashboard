@@ -45,7 +45,7 @@ const scoped = (repo: Repo, q: string) => `is:open is:pr archived:false ${repoQu
 const MERGED_WINDOW_MS = 7 * 24 * 60 * 60 * 1000
 const searchUrl = (q: string) => `https://github.com/pulls?q=${encodeURIComponent(q)}`
 const linksFor = (repo: Repo) => ({
-  reviews: searchUrl(scoped(repo, 'review-requested:@me')),
+  reviews: searchUrl(scoped(repo, 'review-requested:@me draft:false')),
   mine: searchUrl(scoped(repo, 'author:@me draft:false')),
   failing: searchUrl(scoped(repo, 'author:@me draft:false status:failure')),
   approved: searchUrl(scoped(repo, 'author:@me draft:false review:approved')),
@@ -101,7 +101,7 @@ fragment Activity on PullRequest {
 
 const searchesFor = (repo: Repo, since: string) => ({
   merged: `is:pr is:merged archived:false ${repoQualifier(repo)}author:@me merged:>=${since} sort:updated-desc`,
-  reviews: scoped(repo, 'review-requested:@me'),
+  reviews: scoped(repo, 'draft:false review-requested:@me'),
   assigned: scoped(repo, 'draft:false assignee:@me'),
   mine: scoped(repo, 'draft:false author:@me'),
   reviewed: scoped(repo, 'reviewed-by:@me -author:@me sort:updated-desc'),
@@ -217,7 +217,7 @@ const fetchPrs = async ($: EngineInterface, repo: Repo): Promise<Fetched> => {
   if (!data) throw new Error('GitHub returned no data')
   const me = data.viewer.login
   const mine = prsOf(data.mine).filter(pr => !pr.isDraft)
-  const reviews = prsOf(data.reviews)
+  const reviews = prsOf(data.reviews).filter(pr => !pr.isDraft)
   const assigned = prsOf(data.assigned)
 
   return {
