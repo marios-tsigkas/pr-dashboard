@@ -1,6 +1,6 @@
 {
   "name": "pr-dashboard",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "description": "Band above the prompt with GitHub PR counts and news for the session's repo (refreshed every 15 minutes via gh), plus uncommitted changes in the band and a side pane",
   "author": {
     "name": "Marios Tsigkas"

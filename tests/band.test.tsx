@@ -93,6 +93,12 @@ const fakeGh = (on: On, gh: Gh) => {
       const patch = gh.patches?.[file] ?? ''
       return ok(patch, e.argv.includes('--no-index') && patch !== '' ? 1 : 0)
     }
+    if (cmd === 'git' && sub === 'diff' && e.argv.includes('--no-index')) {
+      // A new file's numstat: its lines, all added.
+      const file = e.argv.at(-1) ?? ''
+      const lines = (gh.patches?.[file] ?? '').split('\n').filter(line => line.startsWith('+') && !line.startsWith('+++')).length
+      return ok(`${lines}\t0\t${file}\n`, lines > 0 ? 1 : 0)
+    }
     if (cmd === 'git' && sub === 'diff') {
       if (gh.notRepo || (gh.noHead && e.argv.includes('HEAD'))) return ok('', 128)
       // Test data is written one `added\tdeleted\tpath` per line; git -z ends each with NUL.
@@ -851,5 +857,26 @@ test('files in a new folder are listed one by one, not as the folder', async ($,
   expect(await band.find({ type: 'Text', text: 'src/evals/a.ts' })).toBeDefined()
   expect(await band.find({ type: 'Text', text: 'src/evals/b.ts' })).toBeDefined()
   expect(await band.find({ key: 'band-file:src/evals/' })).toBeUndefined()
+  await band.unmount()
+})
+
+test('a new file counts its lines as added, in its row and the totals', async ($, on) => {
+  const clock = mock.clock(on)
+  mock.store(on)
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('command.register', ($, e) => ({ value: { command: e.name } }))
+  fakeGh(on, {
+    reviews: [],
+    mine: [],
+    numstat: '2\t1\tsrc/a.ts',
+    untracked: 'ci.yml\n',
+    patches: { 'ci.yml': 'diff --git a/ci.yml b/ci.yml\nnew file mode 100644\n--- /dev/null\n+++ b/ci.yml\n@@ -0,0 +1,3 @@\n+a\n+b\n+c' },
+  })
+
+  await $.session.start(DESKTOP)
+  await clock.advance(1)
+  const band = await $.ui.mount({ plugin: 'pr-dashboard', surface: 'desktop', ...BAND })
+  expect(await band.find({ type: 'Text', text: 'new +3' })).toBeDefined()
+  expect(await band.find({ type: 'Text', text: '+5' })).toBeDefined()
   await band.unmount()
 })

@@ -500,12 +500,15 @@ const readChanges = async ($: EngineInterface): Promise<Change[] | null> => {
   // Each new file on its own row, even inside a new folder.
   const untracked = await run(['git', 'ls-files', '--others', '--exclude-standard', '-z'])
   const tracked = diff?.exitCode === 0 ? parseNumstat(diff.stdout) : []
-  const added = (untracked?.exitCode === 0 ? untracked.stdout.split('\0').filter(Boolean) : []).map(path => ({
-    path,
-    added: null,
-    deleted: null,
-    isNew: true,
-  }))
+  const newPaths = untracked?.exitCode === 0 ? untracked.stdout.split('\0').filter(Boolean) : []
+  // A new file's lines count as added (`--no-index` exits 1 when they differ); a binary stays null.
+  const added = await Promise.all(
+    newPaths.map(async (path, i) => {
+      const stat = i < MAX_CHANGES_IN_PANE ? await run(['git', 'diff', '--no-index', '--numstat', '--', '/dev/null', path]) : null
+      const count = stat && stat.exitCode <= 1 ? Number(stat.stdout.split('\t')[0]) : NaN
+      return { path, added: Number.isNaN(count) ? null : count, deleted: null, isNew: true }
+    }),
+  )
 
   return [...tracked, ...added]
 }
@@ -700,7 +703,7 @@ type ChangeStatProps = {
 // A file's +/- (or new / bin), shared by the band and the pane.
 const ChangeStat = ({ change, Box, Text }: ChangeStatProps) =>
   change.isNew ? (
-    <Text color="diffAdded" size="caption">new</Text>
+    <Text color="diffAdded" size="caption">new{change.added === null ? '' : ` +${change.added}`}</Text>
   ) : change.added === null ? (
     <Text dimColor size="caption">bin</Text>
   ) : (
