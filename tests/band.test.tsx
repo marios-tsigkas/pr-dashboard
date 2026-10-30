@@ -47,6 +47,8 @@ type Gh = {
   noHead?: boolean
   notRepo?: boolean
   openFails?: boolean
+  // Other work trees by root, with what git prints inside each.
+  trees?: Record<string, { numstat?: string; untracked?: string }>
 }
 
 const note = (login: string, createdAt: string, url: string, typename = 'User'): Note => ({
@@ -77,6 +79,13 @@ const fakeGh = (on: On, gh: Gh) => {
   const calls: string[][] = []
   on('process.run', ($, e) => {
     const [cmd, sub] = e.argv
+    if (cmd === 'git' && e.argv.includes('--show-toplevel')) {
+      const dir = sub === '-C' ? (e.argv[2] ?? '') : '/repo'
+      return ok(`${Object.keys(gh.trees ?? {}).find(root => dir === root || dir.startsWith(`${root}/`)) ?? '/repo'}\n`)
+    }
+    const tree = e.init?.cwd ? gh.trees?.[e.init.cwd] : undefined
+    if (tree && cmd === 'git' && sub === 'diff') return ok((tree.numstat ?? '').split('\n').filter(Boolean).map(line => `${line}\0`).join(''))
+    if (tree && cmd === 'git' && sub === 'ls-files') return ok((tree.untracked ?? '').split('\n').filter(Boolean).map(line => `${line}\0`).join(''))
     if (cmd === 'open' || cmd === 'xdg-open') {
       if (gh.openFails) return ok('', 1)
       opened.push(e.argv[1] ?? '')
@@ -878,5 +887,33 @@ test('a new file counts its lines as added, in its row and the totals', async ($
   const band = await $.ui.mount({ plugin: 'pr-dashboard', surface: 'desktop', ...BAND })
   expect(await band.find({ type: 'Text', text: 'new +3' })).toBeDefined()
   expect(await band.find({ type: 'Text', text: '+5' })).toBeDefined()
+  await band.unmount()
+})
+
+test('Uncommitted follows the worktree the chat edits, and comes back', async ($, on) => {
+  const clock = mock.clock(on)
+  mock.store(on)
+  on('tool.call', () => ({ result: {} as never }))
+  fakeGh(on, {
+    reviews: [],
+    mine: [],
+    numstat: '1\t0\tmain.ts',
+    trees: { '/wt/impl': { numstat: '4\t2\tsrc/a.ts\n1\t1\tsrc/b.ts' } },
+  })
+
+  await $.session.start(DESKTOP)
+  await clock.advance(1)
+  await $.tool.call({ tool: 'Edit', file_path: '/wt/impl/src/a.ts', old_string: 'a', new_string: 'b' })
+  await clock.advance(1)
+  let band = await $.ui.mount({ plugin: 'pr-dashboard', surface: 'desktop', ...BAND })
+  expect(await band.find({ type: 'Text', text: /Uncommitted in impl: 2 files/ })).toBeDefined()
+  expect(await band.find({ type: 'Text', text: 'src/b.ts' })).toBeDefined()
+  await band.unmount()
+
+  // A command that `cd`s back into the session's own checkout follows it there.
+  await $.tool.call({ tool: 'Bash', command: 'cd /repo && git status' })
+  await clock.advance(1)
+  band = await $.ui.mount({ plugin: 'pr-dashboard', surface: 'desktop', ...BAND })
+  expect(await band.find({ type: 'Text', text: /Uncommitted: 1 file/ })).toBeDefined()
   await band.unmount()
 })

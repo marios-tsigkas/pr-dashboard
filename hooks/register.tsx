@@ -487,10 +487,36 @@ const parseNumstat = (out: string): Change[] => {
   return list
 }
 
+// The work tree the chat last wrote to when it is not the session's own: a chat often edits
+// another worktree by absolute path, or `cd`s into it in a command. Null follows the session.
+let workTree: string | null = null
+const runGit = ($: EngineInterface, argv: string[]) =>
+  $.process.run(argv, ...(workTree === null ? [] : [{ cwd: workTree }])).catch(() => null)
+
+// The absolute folder a tool call writes in: an edited file's, or a command's leading `cd`.
+const touchedDir = (input: Record<string, unknown>): string | null => {
+  const file = input.file_path ?? input.notebook_path
+  if (typeof file === 'string' && file.startsWith('/')) return file.replace(/\/[^/]*$/, '') || '/'
+  const cd = typeof input.command === 'string' ? /^\s*cd\s+(?:"([^"]+)"|'([^']+)'|([^\s;&|]+))/.exec(input.command) : null
+  const dir = cd?.[1] ?? cd?.[2] ?? cd?.[3]
+
+  return dir?.startsWith('/') ? dir : null
+}
+
+const followWorkTree = async ($: EngineInterface, input: Record<string, unknown>) => {
+  const dir = touchedDir(input)
+  if (dir === null) return
+  const top = await $.process.run(['git', '-C', dir, 'rev-parse', '--show-toplevel']).catch(() => null)
+  if (top?.exitCode !== 0) return
+  const root = top.stdout.trim()
+  const own = await $.process.run(['git', 'rev-parse', '--show-toplevel']).catch(() => null)
+  workTree = own?.exitCode === 0 && own.stdout.trim() === root ? null : root
+}
+
 // Uncommitted work against HEAD (staged and unstaged) plus untracked files; local git only.
 // Before the first commit there is no HEAD: staged files are then diffed against nothing.
 const readChanges = async ($: EngineInterface): Promise<Change[] | null> => {
-  const run = (argv: string[]) => $.process.run(argv).catch(() => null)
+  const run = (argv: string[]) => runGit($, argv)
   let diff = await run(['git', 'diff', 'HEAD', '--numstat', '-z'])
   if (diff?.exitCode !== 0) {
     const inside = await run(['git', 'rev-parse', '--is-inside-work-tree'])
@@ -551,7 +577,7 @@ const toDiff = (out: string): Diff => {
 const readDiff = async ($: EngineInterface, change: Change): Promise<Diff> => {
   const files = filesOf(change)
   const [file = change.path] = files.slice(-1)
-  const run = (argv: string[]) => $.process.run(argv).catch(() => null)
+  const run = (argv: string[]) => runGit($, argv)
   // `--` keeps a path from reading as an option. An untracked file diffs against nothing
   // (`--no-index` exits 1 when they differ); before the first commit there is no HEAD.
   const out = change.isNew
@@ -837,7 +863,9 @@ export const register: Register = on => {
 
   on('tool.call', async ($, e, next) => {
     const result = await next(e)
-    if (isStarted && WRITING_TOOLS.has(String(e.tool))) void refreshChanges($)
+    if (isStarted && WRITING_TOOLS.has(String(e.tool))) {
+      void followWorkTree($, e as unknown as Record<string, unknown>).then(() => refreshChanges($))
+    }
 
     return result
   })
@@ -983,7 +1011,8 @@ export const register: Register = on => {
             <Box flexDirection="row" columnGap={2}>
               <Button key="changes" plain onPress={() => update($, isChangesOpen, open => !open)}>
                 <Text dimColor>
-                  {isOpen ? '▾' : '▸'} Uncommitted: {changed.length} {changed.length === 1 ? 'file' : 'files'}
+                  {isOpen ? '▾' : '▸'} Uncommitted{workTree === null ? '' : ` in ${workTree.split('/').at(-1)}`}:{' '}
+                  {changed.length} {changed.length === 1 ? 'file' : 'files'}
                 </Text>
               </Button>
               <Box flexShrink={0} columnGap={1}>
