@@ -663,11 +663,13 @@ const DIFF_PANE_COLUMNS = 100
 const openChangesPane = ($: EngineInterface, { isWide = false } = {}) =>
   $.ui.open({ ...CHANGES_PANE, ...(isWide && { columns: DIFF_PANE_COLUMNS }) }).catch(() => undefined)
 
-// A diff's hunks as runs of like lines, each numbered from its first line: removed lines by the
-// old file, the rest by the new. Drawn as plain code, a run keeps its language's colours.
-type DiffRun = { header: string } | { kind: 'context' | 'added' | 'removed'; start: number; lines: string[] }
-const toRuns = (source: string): DiffRun[] => {
-  const runs: DiffRun[] = []
+// A diff's hunks as runs of like lines. Each run knows the old and new number of its first line;
+// `start` is the one a reader cites: the old file's for removed lines, the new file's otherwise.
+type DiffPart =
+  | { header: string }
+  | { kind: 'context' | 'added' | 'removed'; start: number; oldStart: number; newStart: number; lines: string[] }
+const toRuns = (source: string): DiffPart[] => {
+  const runs: DiffPart[] = []
   let oldLine = 0
   let newLine = 0
   for (const line of source.split('\n')) {
@@ -681,16 +683,80 @@ const toRuns = (source: string): DiffRun[] => {
     const kind = line.startsWith('+') ? 'added' : line.startsWith('-') ? 'removed' : line.startsWith(' ') || line === '' ? 'context' : null
     // `\ No newline at end of file` and anything else unexpected.
     if (kind === null) continue
-    const number = kind === 'removed' ? oldLine++ : kind === 'added' ? newLine++ : (oldLine++, newLine++)
     const last = runs.at(-1)
     if (last && 'kind' in last && last.kind === kind) last.lines.push(line.slice(1))
-    else runs.push({ kind, start: number, lines: [line.slice(1)] })
+    else runs.push({ kind, start: kind === 'removed' ? oldLine : newLine, oldStart: oldLine, newStart: newLine, lines: [line.slice(1)] })
+    if (kind !== 'added') oldLine++
+    if (kind !== 'removed') newLine++
   }
 
   return runs
 }
 
-type DiffRun = Exclude<ReturnType<typeof toRuns>[number], { header: string }>
+type DiffRun = Exclude<DiffPart, { header: string }>
+
+// Words, runs of spaces and single symbols: the units a change within a line is marked in.
+const tokensOf = (line: string) => line.match(/\w+|\s+|[^\w\s]/g) ?? []
+
+type Segment = { text: string; isChanged: boolean }
+
+// Marks what two versions of a line do not share, by the longest common run of tokens. Null when
+// they share too little for the marks to help: the pair is then drawn as whole lines.
+const wordDiff = (before: string, after: string): { removed: Segment[]; added: Segment[] } | null => {
+  const a = tokensOf(before)
+  const b = tokensOf(after)
+  if (a.length * b.length > 40000) return null
+  const width = b.length + 1
+  const common = new Array<number>((a.length + 1) * width).fill(0)
+  const at = (i: number, j: number) => common[i * width + j] ?? 0
+  for (let i = a.length - 1; i >= 0; i--) {
+    for (let j = b.length - 1; j >= 0; j--) {
+      common[i * width + j] = a[i] === b[j] ? at(i + 1, j + 1) + 1 : Math.max(at(i + 1, j), at(i, j + 1))
+    }
+  }
+  const removed: Segment[] = []
+  const added: Segment[] = []
+  const push = (list: Segment[], text: string, isChanged: boolean) => {
+    const last = list.at(-1)
+    if (last && last.isChanged === isChanged) last.text += text
+    else list.push({ text, isChanged })
+  }
+  let i = 0
+  let j = 0
+  let shared = 0
+  while (i < a.length || j < b.length) {
+    const x = a[i] ?? ''
+    const y = b[j] ?? ''
+    if (i < a.length && j < b.length && x === y) {
+      push(removed, x, false)
+      push(added, y, false)
+      // Spaces in common are no likeness.
+      shared += x.trim().length
+      i++
+      j++
+    } else if (j >= b.length || (i < a.length && at(i + 1, j) >= at(i, j + 1))) {
+      push(removed, x, true)
+      i++
+    } else {
+      push(added, y, true)
+      j++
+    }
+  }
+
+  if (shared * 2 < Math.max(before.replace(/\s/g, '').length, after.replace(/\s/g, '').length)) return null
+
+  return { removed: joinChanges(removed), added: joinChanges(added) }
+}
+
+// A space kept between two changes reads as part of one change (`, i18n` rather than `,` `i18n`).
+const joinChanges = (segments: Segment[]) =>
+  segments.reduce<Segment[]>((joined, segment, k) => {
+    const isGap = !segment.isChanged && segment.text.trim() === '' && segments[k - 1]?.isChanged && segments[k + 1]?.isChanged
+    const last = joined.at(-1)
+    if (last && last.isChanged && (isGap || segment.isChanged)) last.text += segment.text
+    else joined.push({ ...segment })
+    return joined
+  }, [])
 
 // A run as a reference for the chat: where it is, and its lines fenced in the file's language.
 // Removed lines are numbered by the old file, so they say so.
@@ -711,47 +777,100 @@ type DiffRunsProps = {
   Text: Elements['desktop']['Text'] | Elements['vscode']['Text'] | Elements['mobile']['Text'] | Elements['terminal']['Text']
 }
 
-// The desktop draws a `format: 'diff'` Code in add/remove colours only, so there a diff is drawn
-// as runs of plain code: a coloured bar outside the code marks added and removed lines.
-const DiffRuns = ({ diff, path, onAdd, Box, Button, Code, Text }: DiffRunsProps) => (
-  <Box flexDirection="column" width="100%" overflow="hidden">
-    {toRuns(diff.source).map((run, i) =>
-      'header' in run ? (
-        <Text key={`hunk:${i}`} dimColor size="caption" wrap="truncate-end">
-          {run.header}
-        </Text>
-      ) : (
-        <Box
-          key={`run:${i}`}
-          flexDirection="row"
-          {...(run.kind !== 'context' && { backgroundColor: run.kind === 'added' ? 'diffAddedDimmed' : 'diffRemovedDimmed' })}
-        >
-          <Box
-            width={1}
-            flexShrink={0}
-            {...(run.kind !== 'context' && { backgroundColor: run.kind === 'added' ? 'diffAdded' : 'diffRemoved' })}
-          />
-          <Box flexGrow={1} minWidth={0} overflow="hidden" paddingLeft={1}>
-            <Code
-              key={`code:${path}:${i}`}
-              source={run.lines.join('\n')}
-              path={path}
-              startLine={run.start}
-              wrap="truncate-end"
-              {...(languageOf(path) && { language: languageOf(path) })}
-            />
+const tintOf = (kind: DiffRun['kind']) =>
+  kind === 'context' ? {} : { backgroundColor: kind === 'added' ? 'diffAddedDimmed' : 'diffRemovedDimmed' }
+const markOf = (kind: DiffRun['kind']) => (kind === 'added' ? '+' : kind === 'removed' ? '-' : ' ')
+
+// GitHub's layout: the old and new line numbers and a +/- column beside the code, each changed
+// line tinted across. Runs are drawn as code in the file's language; a removed line followed by
+// its replacement is drawn instead as plain text with what changed in bold on a stronger tint.
+const DiffRuns = ({ diff, path, onAdd, Box, Button, Code, Text }: DiffRunsProps) => {
+  const parts = toRuns(diff.source)
+  const digits = String(
+    Math.max(1, ...parts.map(part => ('kind' in part ? Math.max(part.oldStart, part.newStart) + part.lines.length : 0))),
+  ).length
+  const number = (n: number | null) => (n === null ? '' : String(n)).padStart(digits)
+  const gutterOf = (run: DiffRun, k: number) =>
+    `${number(run.kind === 'added' ? null : run.oldStart + k)} ${number(run.kind === 'removed' ? null : run.newStart + k)} ${markOf(run.kind)}`
+  // A removed run's lines, by index, paired with the added run right after it when they match in
+  // number and mostly in content.
+  const pairs = new Map<number, ({ removed: Segment[]; added: Segment[] } | null)[]>()
+  parts.forEach((part, i) => {
+    const next = parts[i + 1]
+    if (!('kind' in part) || part.kind !== 'removed' || !next || !('kind' in next) || next.kind !== 'added') return
+    if (part.lines.length !== next.lines.length) return
+    const lines = part.lines.map((line, k) => wordDiff(line, next.lines[k] ?? ''))
+    if (lines.some(Boolean)) pairs.set(i, lines)
+  })
+  const chat = (run: DiffRun, i: number) => (
+    <Hint id={`chat:${path}:${i}`} hint="Add these lines to the prompt" Box={Box} Text={Text}>
+      <Button key={`chat:${path}:${i}`} label="Add to chat" plain onPress={() => onAdd(runForChat(path, run))}>
+        <Text dimColor size="caption">＋ chat</Text>
+      </Button>
+    </Hint>
+  )
+
+  return (
+    <Box flexDirection="column" width="100%" overflow="hidden">
+      {parts.map((part, i) => {
+        if (!('kind' in part)) {
+          return (
+            <Box key={`hunk:${i}`} marginTop={i === 0 ? 0 : 1}>
+              <Text color="suggestion" size="caption" wrap="truncate-end">
+                {part.header}
+              </Text>
+            </Box>
+          )
+        }
+        const lines = pairs.get(i) ?? (part.kind === 'added' ? pairs.get(i - 1) : undefined)
+        if (lines) {
+          const side = part.kind === 'added' ? 'added' : 'removed'
+          return (
+            <Box key={`run:${i}`} flexDirection="row" {...tintOf(part.kind)}>
+              <Box flexDirection="column" flexGrow={1} minWidth={0} overflow="hidden">
+                {part.lines.map((line, k) => (
+                  <Box key={`line:${i}:${k}`} flexDirection="row" columnGap={1}>
+                    <Text mono dimColor>{gutterOf(part, k)}</Text>
+                    <Text mono color={side === 'added' ? 'diffAdded' : 'diffRemoved'} wrap="truncate-end">
+                      {(lines[k]?.[side] ?? [{ text: line, isChanged: false }]).map((segment, n) =>
+                        segment.isChanged ? (
+                          <Text key={`seg:${i}:${k}:${n}`} bold backgroundColor={side === 'added' ? 'diffAddedWord' : 'diffRemovedWord'}>
+                            {segment.text}
+                          </Text>
+                        ) : (
+                          segment.text
+                        ),
+                      )}
+                    </Text>
+                  </Box>
+                ))}
+              </Box>
+              {chat(part, i)}
+            </Box>
+          )
+        }
+        return (
+          <Box key={`run:${i}`} flexDirection="row" {...tintOf(part.kind)}>
+            {/* Drawn as code too, so its rows line up with the code's. */}
+            <Box flexShrink={0}>
+              <Code key={`gutter:${path}:${i}`} source={part.lines.map((_, k) => gutterOf(part, k)).join('\n')} wrap="truncate-end" />
+            </Box>
+            <Box flexGrow={1} minWidth={0} overflow="hidden" paddingLeft={1}>
+              <Code
+                key={`code:${path}:${i}`}
+                source={part.lines.join('\n')}
+                path={path}
+                wrap="truncate-end"
+                {...(languageOf(path) && { language: languageOf(path) })}
+              />
+            </Box>
+            {chat(part, i)}
           </Box>
-          {/* Puts this run, with where it is, into the prompt at the cursor. */}
-          <Hint id={`chat:${path}:${i}`} hint="Add these lines to the prompt" Box={Box} Text={Text}>
-            <Button key={`chat:${path}:${i}`} plain onPress={() => onAdd(runForChat(path, run))}>
-              <Text dimColor size="caption">＋ chat</Text>
-            </Button>
-          </Hint>
-        </Box>
-      ),
-    )}
-  </Box>
-)
+        )
+      })}
+    </Box>
+  )
+}
 
 const addToChat = async ($: EngineInterface, text: string) => {
   const filled = await $.prompt.fill({ text, mode: 'insert' }).catch(() => null)

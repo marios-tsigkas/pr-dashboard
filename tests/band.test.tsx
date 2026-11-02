@@ -740,13 +740,19 @@ test('clicking a file in the pane shows its diff below it; clicking again hides 
   for (const surface of ['terminal', 'desktop'] as const) {
     const pane = await $.ui.mount({ plugin: 'pr-dashboard', surface, ...PANE })
     await pane.press({ key: 'diff:src/a.ts' })
-    const codes = await pane.findAll({ type: 'Code' })
+    // The desktop's line-number gutters are Code too, with no path.
+    const codes = (await pane.findAll({ type: 'Code' })).filter(c => c.props.path !== undefined)
     if (surface === 'terminal') {
       // Hunks only: git's header lines are dropped so the diff parses.
       expect(codes.map(c => c.text)).toEqual(['@@ -1,2 +1,2 @@\n const a = 1\n-const b = 2\n+const b = 3'])
     } else {
-      // Runs of plain code, numbered: removed lines by the old file, the rest by the new.
-      expect(codes.map(c => [c.text, c.props.startLine])).toEqual([['const a = 1', 1], ['const b = 2', 2], ['const b = 3', 2]])
+      // Unchanged lines stay code; an edited line and its replacement are text, the change in bold.
+      expect(codes.map(c => c.text)).toEqual(['const a = 1'])
+      expect((await pane.findAll({ type: 'Code' })).map(c => c.text)).toContain('1 1  ')
+      const bold = (await pane.findAll({ type: 'Text' })).filter(t => t.props.bold && t.props.backgroundColor).map(t => t.text)
+      expect(bold).toEqual(['2', '3'])
+      expect(await pane.find({ type: 'Text', text: '2   -' })).toBeDefined()
+      expect(await pane.find({ type: 'Text', text: '  2 +' })).toBeDefined()
     }
     for (const code of codes) {
       // Coloured as TypeScript, from the .ts extension.
@@ -788,7 +794,7 @@ test('clicking a file in the band opens the pane, wide, with its diff shown', as
   expect(opens).toEqual([{ id: 'uncommitted', columns: 100 }])
   await band.unmount()
   const pane = await $.ui.mount({ plugin: 'pr-dashboard', surface: 'desktop', ...PANE })
-  expect((await pane.findAll({ type: 'Code' })).map(c => c.text)).toEqual(['x', 'y'])
+  expect((await pane.findAll({ type: 'Code' })).filter(c => c.props.path !== undefined).map(c => c.text)).toEqual(['x', 'y'])
   await pane.unmount()
 })
 
@@ -844,8 +850,8 @@ test('diff colouring follows the file: PHP, Python, and no language for an unkno
     ['config.unknownext', undefined],
   ] as const) {
     await pane.press({ key: `diff:${file}` })
-    // One diff open at a time here, so the only Code is this file's.
-    const code = await pane.find({ type: 'Code' })
+    // One diff open at a time here, so the only code with a path is this file's.
+    const code = (await pane.findAll({ type: 'Code' })).find(c => c.props.path !== undefined)
     expect(code?.props.language).toBe(language)
     expect(code?.props.path).toBe(file)
     await pane.press({ key: `diff:${file}` })
