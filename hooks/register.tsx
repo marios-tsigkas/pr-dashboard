@@ -617,6 +617,20 @@ const toggleDiff = async ($: EngineInterface, change: Change) => {
   } else await showDiff($, change)
 }
 
+// Opens every listed file's diff, or closes them all when every one is open.
+const toggleAllDiffs = async ($: EngineInterface) => {
+  const list = ((await read($, changes)) ?? []).slice(0, MAX_CHANGES_IN_PANE)
+  const open = await read($, expanded)
+  if (list.length > 0 && list.every(change => open.includes(change.path))) {
+    await update($, expanded, () => [])
+    return
+  }
+  const next: Record<string, Diff> = {}
+  for (const change of list) next[change.path] = await readDiff($, change)
+  await update($, diffs, all => ({ ...all, ...next }))
+  await update($, expanded, () => list.map(change => change.path))
+}
+
 // One read at a time; a request while one runs reruns once after it, so the last read wins in order.
 let isReading = false
 let isRerunWanted = false
@@ -806,6 +820,13 @@ export const register: Register = on => {
           <Button key="pane-refresh" plain onPress={() => void refreshChanges($)}>
             <Text dimColor size="caption">↻</Text>
           </Button>
+          {changed !== null && changed.length > 0 && (
+            <Button key="pane-toggle-all" plain onPress={() => void toggleAllDiffs($)}>
+              <Text dimColor size="caption">
+                {changed.slice(0, MAX_CHANGES_IN_PANE).every(change => open.includes(change.path)) ? '▸ Close all' : '▾ Open all'}
+              </Text>
+            </Button>
+          )}
         </Box>
         {(changed ?? []).slice(0, MAX_CHANGES_IN_PANE).map(change => {
           const isExpanded = open.includes(change.path)

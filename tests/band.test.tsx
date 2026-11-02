@@ -917,3 +917,28 @@ test('Uncommitted follows the worktree the chat edits, and comes back', async ($
   expect(await band.find({ type: 'Text', text: /Uncommitted: 1 file/ })).toBeDefined()
   await band.unmount()
 })
+
+test('the pane opens every diff at once, then closes them all', async ($, on) => {
+  const clock = mock.clock(on)
+  mock.store(on)
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('command.register', ($, e) => ({ value: { command: e.name } }))
+  fakeGh(on, {
+    reviews: [],
+    mine: [],
+    numstat: '1\t1\ta.ts\n1\t1\tb.ts',
+    patches: { 'a.ts': patchOf('a.ts', '@@ -1 +1 @@\n-a\n+A'), 'b.ts': patchOf('b.ts', '@@ -1 +1 @@\n-b\n+B') },
+  })
+
+  await $.session.start(DESKTOP)
+  await clock.advance(1)
+  const pane = await $.ui.mount({ plugin: 'pr-dashboard', surface: 'terminal', ...PANE })
+  await pane.press({ key: 'diff:a.ts' })
+  expect((await pane.find({ key: 'pane-toggle-all' }))?.text).toBe('▾ Open all')
+  await pane.press({ key: 'pane-toggle-all' })
+  expect((await pane.findAll({ type: 'Code' })).length).toBe(2)
+  expect((await pane.find({ key: 'pane-toggle-all' }))?.text).toBe('▸ Close all')
+  await pane.press({ key: 'pane-toggle-all' })
+  expect(await pane.find({ type: 'Code' })).toBeUndefined()
+  await pane.unmount()
+})
