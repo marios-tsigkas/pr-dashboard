@@ -742,9 +742,11 @@ const DiffRuns = ({ diff, path, onAdd, Box, Button, Code, Text }: DiffRunsProps)
             />
           </Box>
           {/* Puts this run, with where it is, into the prompt at the cursor. */}
-          <Button key={`chat:${path}:${i}`} plain onPress={() => onAdd(runForChat(path, run))}>
-            <Text dimColor size="caption">＋ chat</Text>
-          </Button>
+          <Hint id={`chat:${path}:${i}`} hint="Add these lines to the prompt" Box={Box} Text={Text}>
+            <Button key={`chat:${path}:${i}`} label="Add to chat" plain onPress={() => onAdd(runForChat(path, run))}>
+              <Text dimColor size="caption">＋ chat</Text>
+            </Button>
+          </Hint>
         </Box>
       ),
     )}
@@ -755,6 +757,24 @@ const addToChat = async ($: EngineInterface, text: string) => {
   const filled = await $.prompt.fill({ text, mode: 'insert' }).catch(() => null)
   if (!filled?.isFilled) $.ui.toast("Couldn't add to the prompt (is a dialog open?)")
 }
+
+type HintProps = {
+  id: string
+  hint: string
+  children: unknown
+  Box: Elements['desktop']['Box'] | Elements['vscode']['Box'] | Elements['mobile']['Box'] | Elements['terminal']['Box']
+  Text: Elements['desktop']['Text'] | Elements['vscode']['Text'] | Elements['mobile']['Text'] | Elements['terminal']['Text']
+}
+
+// Mod buttons have no tooltip, so a short hint is revealed beside the control while it is hovered.
+const Hint = ({ id, hint, children, Box, Text }: HintProps) => (
+  <Box key={`hint:${id}`} flexDirection="row" flexShrink={0}>
+    {children as never}
+    <Box display="none" hover={{ display: 'flex' }} flexShrink={0} marginLeft={1}>
+      <Text dimColor italic size="caption">{hint}</Text>
+    </Box>
+  </Box>
+)
 
 type ChangeStatProps = {
   change: Change
@@ -839,9 +859,11 @@ export const register: Register = on => {
               <Text color="diffRemoved">−{deleted}</Text>
             </Box>
           )}
-          <Button key="pane-refresh" plain onPress={() => void refreshChanges($)}>
-            <Text dimColor size="caption">↻</Text>
-          </Button>
+          <Hint id="pane-refresh" hint="Re-read the changes" Box={Box} Text={Text}>
+            <Button key="pane-refresh" label="Refresh changes" plain onPress={() => void refreshChanges($)}>
+              <Text dimColor size="caption">↻</Text>
+            </Button>
+          </Hint>
           {changed !== null && changed.length > 0 && (
             <Button key="pane-toggle-all" plain onPress={() => void toggleAllDiffs($)}>
               <Text dimColor size="caption">
@@ -864,7 +886,12 @@ export const register: Register = on => {
               <Box flexDirection="row" columnGap={1}>
                 <ChangeStat change={change} Box={Box} Text={Text} />
                 {/* Clicking a file shows or hides its diff below it. */}
-                <Button key={`diff:${change.path}`} plain onPress={() => void toggleDiff($, change)}>
+                <Button
+                  key={`diff:${change.path}`}
+                  label={`${isExpanded ? 'Hide' : 'Show'} the diff of ${change.path}`}
+                  plain
+                  onPress={() => void toggleDiff($, change)}
+                >
                   {isExpanded ? (
                     <Text weight="semibold">▾ {cutStart(change.path, width - 6)}</Text>
                   ) : (
@@ -954,9 +981,11 @@ export const register: Register = on => {
     return (
       <Box flexDirection="column">
         {snap && isPrsHidden && (
-          <Button key="show" plain onPress={() => update($, isHidden, () => false)}>
-            <Text dimColor size="caption">▸ PRs</Text>
-          </Button>
+          <Hint id="show" hint="Show the PR row" Box={Box} Text={Text}>
+            <Button key="show" label="Show PRs" plain onPress={() => update($, isHidden, () => false)}>
+              <Text dimColor size="caption">▸ PRs</Text>
+            </Button>
+          </Hint>
         )}
         {snap && !isPrsHidden && (
           // Items keep their width and wrap as a whole onto the next line rather than breaking.
@@ -1019,12 +1048,16 @@ export const register: Register = on => {
               <Text dimColor size="caption">{snap.error ?? `at ${clockTime(snap.checkedAt)}`}</Text>
             </Box>
             <Box flexShrink={0} columnGap={1}>
-              <Button key="refresh" plain onPress={() => void refresh($, { force: true })}>
-                <Text dimColor size="caption">↻</Text>
-              </Button>
-              <Button key="hide" plain onPress={() => update($, isHidden, () => true)}>
-                <Text dimColor size="caption">hide</Text>
-              </Button>
+              <Hint id="refresh" hint="Check GitHub now (it also does every 15 min)" Box={Box} Text={Text}>
+                <Button key="refresh" label="Refresh PRs" plain onPress={() => void refresh($, { force: true })}>
+                  <Text dimColor size="caption">↻</Text>
+                </Button>
+              </Hint>
+              <Hint id="hide" hint="Hide the PR row; ▸ PRs brings it back" Box={Box} Text={Text}>
+                <Button key="hide" label="Hide PRs" plain onPress={() => update($, isHidden, () => true)}>
+                  <Text dimColor size="caption">hide</Text>
+                </Button>
+              </Hint>
             </Box>
           </Box>
         )}
@@ -1035,7 +1068,9 @@ export const register: Register = on => {
               {events.length > MAX_FRESH_SHOWN && (
                 <Link href={LINKS.recent}>+{events.length - MAX_FRESH_SHOWN} more</Link>
               )}
-              <Button key="dismiss" plain label="dismiss" onPress={() => void dismiss($)} />
+              <Hint id="dismiss" hint="Clear all news" Box={Box} Text={Text}>
+                <Button key="dismiss" plain label="dismiss" onPress={() => void dismiss($)} />
+              </Hint>
             </Box>
             {events.slice(0, MAX_FRESH_SHOWN).map(event => {
               const href = event.href ?? event.pr.url
@@ -1049,9 +1084,11 @@ export const register: Register = on => {
                     pressableLinks={[href]}
                     onLinkPress={() => void openEvent($, event)}
                   />
-                  <Button key={`drop:${id}`} plain onPress={() => void removeEvent($, event)}>
-                    <Text dimColor size="caption">×</Text>
-                  </Button>
+                  <Hint id={`drop:${id}`} hint="Clear without opening" Box={Box} Text={Text}>
+                    <Button key={`drop:${id}`} label="Clear" plain onPress={() => void removeEvent($, event)}>
+                      <Text dimColor size="caption">×</Text>
+                    </Button>
+                  </Hint>
                 </Box>
               )
             })}
@@ -1070,29 +1107,36 @@ export const register: Register = on => {
                 <Text color="diffAdded">+{added}</Text>
                 <Text color="diffRemoved">−{deleted}</Text>
               </Box>
-              <Button key="changes-pane" plain onPress={() => void openChangesPane($)}>
-                <Text dimColor size="caption">⧉</Text>
-              </Button>
+              <Hint id="changes-pane" hint="Open the side pane with each file's diff" Box={Box} Text={Text}>
+                <Button key="changes-pane" label="Open the Uncommitted pane" plain onPress={() => void openChangesPane($)}>
+                  <Text dimColor size="caption">⧉</Text>
+                </Button>
+              </Hint>
             </Box>
             {isOpen &&
               changed.slice(0, MAX_CHANGES_SHOWN).map(change => (
                 <Box key={`change:${change.path}`} flexDirection="row" columnGap={1}>
                   <ChangeStat change={change} Box={Box} Text={Text} />
                   {/* Opens the pane with this file's diff shown. */}
-                  <Button
-                    key={`band-file:${change.path}`}
-                    plain
-                    onPress={() => void showDiff($, change)}
-                  >
-                    <Text dimColor size="caption">{cutStart(change.path, itemWidth - 10)}</Text>
-                  </Button>
+                  <Hint id={`band-file:${change.path}`} hint="Show its diff" Box={Box} Text={Text}>
+                    <Button
+                      key={`band-file:${change.path}`}
+                      label={`Show the diff of ${change.path}`}
+                      plain
+                      onPress={() => void showDiff($, change)}
+                    >
+                      <Text dimColor size="caption">{cutStart(change.path, itemWidth - 10)}</Text>
+                    </Button>
+                  </Hint>
                 </Box>
               ))}
             {isOpen && changed.length > MAX_CHANGES_SHOWN && (
               // The pane lists every file.
-              <Button key="changes-more" plain onPress={() => void openChangesPane($)}>
-                <Text dimColor size="caption">+{changed.length - MAX_CHANGES_SHOWN} more</Text>
-              </Button>
+              <Hint id="changes-more" hint="Open the side pane with every file" Box={Box} Text={Text}>
+                <Button key="changes-more" label="Show all files" plain onPress={() => void openChangesPane($)}>
+                  <Text dimColor size="caption">+{changed.length - MAX_CHANGES_SHOWN} more</Text>
+                </Button>
+              </Hint>
             )}
           </Box>
         )}
