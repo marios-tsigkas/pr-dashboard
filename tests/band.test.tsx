@@ -942,3 +942,34 @@ test('the pane opens every diff at once, then closes them all', async ($, on) =>
   expect(await pane.find({ type: 'Code' })).toBeUndefined()
   await pane.unmount()
 })
+
+test('＋ chat puts a diff run, with its file and lines, into the prompt', async ($, on) => {
+  const clock = mock.clock(on)
+  mock.store(on)
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('command.register', ($, e) => ({ value: { command: e.name } }))
+  const fills: { text: string; mode?: string }[] = []
+  on('prompt.fill', ($, e) => {
+    fills.push({ text: e.text, mode: e.mode })
+    return { isFilled: true }
+  })
+  fakeGh(on, {
+    reviews: [],
+    mine: [],
+    numstat: '2\t1\tsrc/a.ts',
+    patches: { 'src/a.ts': patchOf('src/a.ts', '@@ -10,2 +10,3 @@\n keep\n-old\n+one\n+two') },
+  })
+
+  await $.session.start(DESKTOP)
+  await clock.advance(1)
+  const pane = await $.ui.mount({ plugin: 'pr-dashboard', surface: 'desktop', ...PANE })
+  await pane.press({ key: 'diff:src/a.ts' })
+  // Runs: header, context, removed, added.
+  await pane.press({ key: 'chat:src/a.ts:3' })
+  await pane.press({ key: 'chat:src/a.ts:2' })
+  expect(fills).toEqual([
+    { text: 'src/a.ts:11-12\n```typescript\none\ntwo\n```\n', mode: 'insert' },
+    { text: 'src/a.ts:11 (removed)\n```typescript\nold\n```\n', mode: 'insert' },
+  ])
+  await pane.unmount()
+})

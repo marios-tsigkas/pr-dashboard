@@ -690,9 +690,22 @@ const toRuns = (source: string): DiffRun[] => {
   return runs
 }
 
+type DiffRun = Exclude<ReturnType<typeof toRuns>[number], { header: string }>
+
+// A run as a reference for the chat: where it is, and its lines fenced in the file's language.
+// Removed lines are numbered by the old file, so they say so.
+const runForChat = (path: string, run: DiffRun) => {
+  const end = run.start + run.lines.length - 1
+  const where = `${path}:${run.start}${end > run.start ? `-${end}` : ''}${run.kind === 'removed' ? ' (removed)' : ''}`
+
+  return `${where}\n\`\`\`${languageOf(path) ?? ''}\n${run.lines.join('\n')}\n\`\`\`\n`
+}
+
 type DiffRunsProps = {
   diff: Diff
   path: string
+  onAdd: (text: string) => void
+  Button: Elements['desktop']['Button'] | Elements['vscode']['Button'] | Elements['mobile']['Button'] | Elements['terminal']['Button']
   Box: Elements['desktop']['Box'] | Elements['vscode']['Box'] | Elements['mobile']['Box'] | Elements['terminal']['Box']
   Code: Elements['desktop']['Code'] | Elements['vscode']['Code'] | Elements['mobile']['Code'] | Elements['terminal']['Code']
   Text: Elements['desktop']['Text'] | Elements['vscode']['Text'] | Elements['mobile']['Text'] | Elements['terminal']['Text']
@@ -700,7 +713,7 @@ type DiffRunsProps = {
 
 // The desktop draws a `format: 'diff'` Code in add/remove colours only, so there a diff is drawn
 // as runs of plain code: a coloured bar outside the code marks added and removed lines.
-const DiffRuns = ({ diff, path, Box, Code, Text }: DiffRunsProps) => (
+const DiffRuns = ({ diff, path, onAdd, Box, Button, Code, Text }: DiffRunsProps) => (
   <Box flexDirection="column" width="100%" overflow="hidden">
     {toRuns(diff.source).map((run, i) =>
       'header' in run ? (
@@ -728,11 +741,20 @@ const DiffRuns = ({ diff, path, Box, Code, Text }: DiffRunsProps) => (
               {...(languageOf(path) && { language: languageOf(path) })}
             />
           </Box>
+          {/* Puts this run, with where it is, into the prompt at the cursor. */}
+          <Button key={`chat:${path}:${i}`} plain onPress={() => onAdd(runForChat(path, run))}>
+            <Text dimColor size="caption">＋ chat</Text>
+          </Button>
         </Box>
       ),
     )}
   </Box>
 )
+
+const addToChat = async ($: EngineInterface, text: string) => {
+  const filled = await $.prompt.fill({ text, mode: 'insert' }).catch(() => null)
+  if (!filled?.isFilled) $.ui.toast("Couldn't add to the prompt (is a dialog open?)")
+}
 
 type ChangeStatProps = {
   change: Change
@@ -851,7 +873,15 @@ export const register: Register = on => {
                 </Button>
               </Box>
               {isExpanded && diff && diff.source !== '' && e.surface !== 'terminal' && (
-                <DiffRuns diff={diff} path={filesOf(change).at(-1) ?? change.path} Box={Box} Code={Code} Text={Text} />
+                <DiffRuns
+                  diff={diff}
+                  path={filesOf(change).at(-1) ?? change.path}
+                  onAdd={text => void addToChat($, text)}
+                  Box={Box}
+                  Button={Button}
+                  Code={Code}
+                  Text={Text}
+                />
               )}
               {isExpanded && diff && diff.source !== '' && e.surface === 'terminal' && (
                 // One row per line, cut at the edge; tokens are coloured by the (new) file's language.
