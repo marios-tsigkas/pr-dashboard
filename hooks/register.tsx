@@ -785,6 +785,9 @@ const markOf = (kind: DiffRun['kind']) => (kind === 'added' ? '+' : kind === 're
 // line tinted across. Runs are drawn as code in the file's language; a removed line followed by
 // its replacement is drawn instead as plain text with what changed in bold and underlined (the
 // desktop's word tint is too bright to read text on).
+// Cards are as wide as their code, so each card's first line is padded past the pane's width.
+const FULL_WIDTH = 400
+
 const DiffRuns = ({ diff, path, onAdd, Box, Button, Code, Text }: DiffRunsProps) => {
   const parts = toRuns(diff.source)
   const digits = String(
@@ -854,11 +857,11 @@ const DiffRuns = ({ diff, path, onAdd, Box, Button, Code, Text }: DiffRunsProps)
         return (
           // The desktop draws each Code as a card of its own, so the run's numbers are its own gutter.
           <Box key={`run:${i}`} flexDirection="row" alignItems="flex-start" {...tintOf(part.kind)}>
-            {/* The card is as wide as its code, so 💬 follows it, beside its copy icon. */}
-            <Box flexShrink={1} minWidth={0} overflow="hidden" paddingLeft={1}>
+            {/* Every card fills the row, so cards line up and 💬 sits at the same place beside each copy icon. */}
+            <Box flexGrow={1} flexShrink={1} minWidth={0} overflow="hidden" paddingLeft={1}>
               <Code
                 key={`code:${path}:${i}`}
-                source={part.lines.join('\n')}
+                source={[part.lines[0].padEnd(FULL_WIDTH), ...part.lines.slice(1)].join('\n')}
                 path={path}
                 startLine={part.start}
                 wrap="truncate-end"

@@ -746,7 +746,7 @@ test('clicking a file in the pane shows its diff below it; clicking again hides 
       expect(codes.map(c => c.text)).toEqual(['@@ -1,2 +1,2 @@\n const a = 1\n-const b = 2\n+const b = 3'])
     } else {
       // Unchanged lines stay code; an edited line and its replacement are text, the change in bold.
-      expect(codes.map(c => c.text)).toEqual(['const a = 1'])
+      expect(codes.map(c => c.text.trimEnd())).toEqual(['const a = 1'])
       // Code runs number their own lines.
       expect(codes.map(c => c.props.startLine)).toEqual([1])
       const bold = (await pane.findAll({ type: 'Text' })).filter(t => t.props.bold && t.props.underline).map(t => t.text)
@@ -761,7 +761,7 @@ test('clicking a file in the pane shows its diff below it; clicking again hides 
       expect(code.props.wrap).toBe('truncate-end')
     }
     await pane.press({ key: 'diff:notes.md' })
-    expect((await pane.findAll({ type: 'Code' })).map(c => c.text)).toContain(surface === 'terminal' ? '@@ -0,0 +1 @@\n+hello' : 'hello')
+    expect((await pane.findAll({ type: 'Code' })).map(c => c.text.trimEnd())).toContain(surface === 'terminal' ? '@@ -0,0 +1 @@\n+hello' : 'hello')
     await pane.press({ key: 'diff:src/a.ts' })
     await pane.press({ key: 'diff:notes.md' })
     expect(await pane.find({ type: 'Code' })).toBeUndefined()
@@ -794,7 +794,7 @@ test('clicking a file in the band opens the pane, wide, with its diff shown', as
   expect(opens).toEqual([{ id: 'uncommitted', columns: 100 }])
   await band.unmount()
   const pane = await $.ui.mount({ plugin: 'pr-dashboard', surface: 'desktop', ...PANE })
-  expect((await pane.findAll({ type: 'Code' })).filter(c => c.props.path !== undefined).map(c => c.text)).toEqual(['x', 'y'])
+  expect((await pane.findAll({ type: 'Code' })).filter(c => c.props.path !== undefined).map(c => c.text.trimEnd())).toEqual(['x', 'y'])
   await pane.unmount()
 })
 
