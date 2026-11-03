@@ -828,7 +828,8 @@ const DiffRuns = ({ diff, path, onAdd, Box, Button, Code, Text }: DiffRunsProps)
             <Box key={`run:${i}`} flexDirection="row" alignItems="flex-start" {...tintOf(part.kind)}>
               <Box flexDirection="column" flexGrow={1} minWidth={0} overflow="hidden">
                 {part.lines.map((line, k) => (
-                  <Box key={`line:${i}:${k}`} flexDirection="row" columnGap={1}>
+                  // In by the code cards' border and padding, so the numbers line up with theirs.
+                  <Box key={`line:${i}:${k}`} flexDirection="row" columnGap={1} paddingLeft={1}>
                     <Text mono dimColor>{gutterOf(part, k)}</Text>
                     <Text mono color={side === 'added' ? 'diffAdded' : 'diffRemoved'} wrap="truncate-end">
                       {(lines[k]?.[side] ?? [{ text: line, isChanged: false }]).map((segment, n) =>
@@ -853,7 +854,8 @@ const DiffRuns = ({ diff, path, onAdd, Box, Button, Code, Text }: DiffRunsProps)
         return (
           // The desktop draws each Code as a card of its own, so the run's numbers are its own gutter.
           <Box key={`run:${i}`} flexDirection="row" alignItems="flex-start" {...tintOf(part.kind)}>
-            <Box position="relative" flexGrow={1} minWidth={0} overflow="hidden" paddingLeft={1}>
+            {/* The card is as wide as its code, so 💬 follows it, beside its copy icon. */}
+            <Box flexShrink={1} minWidth={0} overflow="hidden" paddingLeft={1}>
               <Code
                 key={`code:${path}:${i}`}
                 source={part.lines.join('\n')}
@@ -862,10 +864,9 @@ const DiffRuns = ({ diff, path, onAdd, Box, Button, Code, Text }: DiffRunsProps)
                 wrap="truncate-end"
                 {...(languageOf(path) && { language: languageOf(path) })}
               />
-              {/* Over the card's top-right corner, just left of its copy icon. */}
-              <Box position="absolute" top={1} right={3}>
-                {chat(part, i)}
-              </Box>
+            </Box>
+            <Box flexShrink={0} marginTop={1} paddingLeft={1}>
+              {chat(part, i)}
             </Box>
           </Box>
         )
