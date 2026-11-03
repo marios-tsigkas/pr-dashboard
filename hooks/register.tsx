@@ -783,15 +783,16 @@ const markOf = (kind: DiffRun['kind']) => (kind === 'added' ? '+' : kind === 're
 
 // GitHub's layout: the old and new line numbers and a +/- column beside the code, each changed
 // line tinted across. Runs are drawn as code in the file's language; a removed line followed by
-// its replacement is drawn instead as plain text with what changed in bold on a stronger tint.
+// its replacement is drawn instead as plain text with what changed in bold and underlined (the
+// desktop's word tint is too bright to read text on).
 const DiffRuns = ({ diff, path, onAdd, Box, Button, Code, Text }: DiffRunsProps) => {
   const parts = toRuns(diff.source)
   const digits = String(
     Math.max(1, ...parts.map(part => ('kind' in part ? Math.max(part.oldStart, part.newStart) + part.lines.length : 0))),
   ).length
   const number = (n: number | null) => (n === null ? '' : String(n)).padStart(digits)
-  const gutterOf = (run: DiffRun, k: number) =>
-    `${number(run.kind === 'added' ? null : run.oldStart + k)} ${number(run.kind === 'removed' ? null : run.newStart + k)} ${markOf(run.kind)}`
+  // One number column, as the code cards number their lines: the old file's for a removed line.
+  const gutterOf = (run: DiffRun, k: number) => `${number(run.start + k)} ${markOf(run.kind)}`
   // A removed run's lines, by index, paired with the added run right after it when they match in
   // number and mostly in content.
   const pairs = new Map<number, ({ removed: Segment[]; added: Segment[] } | null)[]>()
@@ -803,11 +804,9 @@ const DiffRuns = ({ diff, path, onAdd, Box, Button, Code, Text }: DiffRunsProps)
     if (lines.some(Boolean)) pairs.set(i, lines)
   })
   const chat = (run: DiffRun, i: number) => (
-    <Hint id={`chat:${path}:${i}`} hint="Add these lines to the prompt" Box={Box} Text={Text}>
-      <Button key={`chat:${path}:${i}`} label="Add to chat" plain onPress={() => onAdd(runForChat(path, run))}>
-        <Text dimColor size="caption">＋ chat</Text>
-      </Button>
-    </Hint>
+    <Button key={`chat:${path}:${i}`} plain onPress={() => onAdd(runForChat(path, run))}>
+      <Text dimColor>💬</Text>
+    </Button>
   )
 
   return (
@@ -826,7 +825,7 @@ const DiffRuns = ({ diff, path, onAdd, Box, Button, Code, Text }: DiffRunsProps)
         if (lines) {
           const side = part.kind === 'added' ? 'added' : 'removed'
           return (
-            <Box key={`run:${i}`} flexDirection="row" {...tintOf(part.kind)}>
+            <Box key={`run:${i}`} flexDirection="row" alignItems="flex-start" {...tintOf(part.kind)}>
               <Box flexDirection="column" flexGrow={1} minWidth={0} overflow="hidden">
                 {part.lines.map((line, k) => (
                   <Box key={`line:${i}:${k}`} flexDirection="row" columnGap={1}>
@@ -834,7 +833,7 @@ const DiffRuns = ({ diff, path, onAdd, Box, Button, Code, Text }: DiffRunsProps)
                     <Text mono color={side === 'added' ? 'diffAdded' : 'diffRemoved'} wrap="truncate-end">
                       {(lines[k]?.[side] ?? [{ text: line, isChanged: false }]).map((segment, n) =>
                         segment.isChanged ? (
-                          <Text key={`seg:${i}:${k}:${n}`} bold backgroundColor={side === 'added' ? 'diffAddedWord' : 'diffRemovedWord'}>
+                          <Text key={`seg:${i}:${k}:${n}`} bold underline>
                             {segment.text}
                           </Text>
                         ) : (
@@ -845,26 +844,29 @@ const DiffRuns = ({ diff, path, onAdd, Box, Button, Code, Text }: DiffRunsProps)
                   </Box>
                 ))}
               </Box>
-              {chat(part, i)}
+              <Box flexShrink={0} paddingX={1}>
+                {chat(part, i)}
+              </Box>
             </Box>
           )
         }
         return (
-          <Box key={`run:${i}`} flexDirection="row" {...tintOf(part.kind)}>
-            {/* Drawn as code too, so its rows line up with the code's. */}
-            <Box flexShrink={0}>
-              <Code key={`gutter:${path}:${i}`} source={part.lines.map((_, k) => gutterOf(part, k)).join('\n')} wrap="truncate-end" />
-            </Box>
-            <Box flexGrow={1} minWidth={0} overflow="hidden" paddingLeft={1}>
+          // The desktop draws each Code as a card of its own, so the run's numbers are its own gutter.
+          <Box key={`run:${i}`} flexDirection="row" alignItems="flex-start" {...tintOf(part.kind)}>
+            <Box position="relative" flexGrow={1} minWidth={0} overflow="hidden" paddingLeft={1}>
               <Code
                 key={`code:${path}:${i}`}
                 source={part.lines.join('\n')}
                 path={path}
+                startLine={part.start}
                 wrap="truncate-end"
                 {...(languageOf(path) && { language: languageOf(path) })}
               />
+              {/* Over the card's top-right corner, just left of its copy icon. */}
+              <Box position="absolute" top={1} right={3}>
+                {chat(part, i)}
+              </Box>
             </Box>
-            {chat(part, i)}
           </Box>
         )
       })}
@@ -876,24 +878,6 @@ const addToChat = async ($: EngineInterface, text: string) => {
   const filled = await $.prompt.fill({ text, mode: 'insert' }).catch(() => null)
   if (!filled?.isFilled) $.ui.toast("Couldn't add to the prompt (is a dialog open?)")
 }
-
-type HintProps = {
-  id: string
-  hint: string
-  children: unknown
-  Box: Elements['desktop']['Box'] | Elements['vscode']['Box'] | Elements['mobile']['Box'] | Elements['terminal']['Box']
-  Text: Elements['desktop']['Text'] | Elements['vscode']['Text'] | Elements['mobile']['Text'] | Elements['terminal']['Text']
-}
-
-// Mod buttons have no tooltip, so a short hint is revealed beside the control while it is hovered.
-const Hint = ({ id, hint, children, Box, Text }: HintProps) => (
-  <Box key={`hint:${id}`} flexDirection="row" flexShrink={0}>
-    {children as never}
-    <Box display="none" hover={{ display: 'flex' }} flexShrink={0} marginLeft={1}>
-      <Text dimColor italic size="caption">{hint}</Text>
-    </Box>
-  </Box>
-)
 
 type ChangeStatProps = {
   change: Change
@@ -978,11 +962,9 @@ export const register: Register = on => {
               <Text color="diffRemoved">−{deleted}</Text>
             </Box>
           )}
-          <Hint id="pane-refresh" hint="Re-read the changes" Box={Box} Text={Text}>
-            <Button key="pane-refresh" plain onPress={() => void refreshChanges($)}>
-              <Text dimColor size="caption">↻</Text>
-            </Button>
-          </Hint>
+          <Button key="pane-refresh" plain onPress={() => void refreshChanges($)}>
+            <Text dimColor size="caption">↻</Text>
+          </Button>
           {changed !== null && changed.length > 0 && (
             <Button key="pane-toggle-all" plain onPress={() => void toggleAllDiffs($)}>
               <Text dimColor size="caption">
@@ -1099,11 +1081,9 @@ export const register: Register = on => {
     return (
       <Box flexDirection="column">
         {snap && isPrsHidden && (
-          <Hint id="show" hint="Show the PR row" Box={Box} Text={Text}>
-            <Button key="show" plain onPress={() => update($, isHidden, () => false)}>
-              <Text dimColor size="caption">▸ PRs</Text>
-            </Button>
-          </Hint>
+          <Button key="show" plain onPress={() => update($, isHidden, () => false)}>
+            <Text dimColor size="caption">▸ PRs</Text>
+          </Button>
         )}
         {snap && !isPrsHidden && (
           // Items keep their width and wrap as a whole onto the next line rather than breaking.
@@ -1166,16 +1146,12 @@ export const register: Register = on => {
               <Text dimColor size="caption">{snap.error ?? `at ${clockTime(snap.checkedAt)}`}</Text>
             </Box>
             <Box flexShrink={0} columnGap={1}>
-              <Hint id="refresh" hint="Check GitHub now (it also does every 15 min)" Box={Box} Text={Text}>
-                <Button key="refresh" plain onPress={() => void refresh($, { force: true })}>
-                  <Text dimColor size="caption">↻</Text>
-                </Button>
-              </Hint>
-              <Hint id="hide" hint="Hide the PR row; ▸ PRs brings it back" Box={Box} Text={Text}>
-                <Button key="hide" plain onPress={() => update($, isHidden, () => true)}>
-                  <Text dimColor size="caption">hide</Text>
-                </Button>
-              </Hint>
+              <Button key="refresh" plain onPress={() => void refresh($, { force: true })}>
+                <Text dimColor size="caption">↻</Text>
+              </Button>
+              <Button key="hide" plain onPress={() => update($, isHidden, () => true)}>
+                <Text dimColor size="caption">hide</Text>
+              </Button>
             </Box>
           </Box>
         )}
@@ -1186,9 +1162,7 @@ export const register: Register = on => {
               {events.length > MAX_FRESH_SHOWN && (
                 <Link href={LINKS.recent}>+{events.length - MAX_FRESH_SHOWN} more</Link>
               )}
-              <Hint id="dismiss" hint="Clear all news" Box={Box} Text={Text}>
-                <Button key="dismiss" plain label="dismiss" onPress={() => void dismiss($)} />
-              </Hint>
+              <Button key="dismiss" plain label="dismiss" onPress={() => void dismiss($)} />
             </Box>
             {events.slice(0, MAX_FRESH_SHOWN).map(event => {
               const href = event.href ?? event.pr.url
@@ -1202,11 +1176,9 @@ export const register: Register = on => {
                     pressableLinks={[href]}
                     onLinkPress={() => void openEvent($, event)}
                   />
-                  <Hint id={`drop:${id}`} hint="Clear without opening" Box={Box} Text={Text}>
-                    <Button key={`drop:${id}`} plain onPress={() => void removeEvent($, event)}>
-                      <Text dimColor size="caption">×</Text>
-                    </Button>
-                  </Hint>
+                  <Button key={`drop:${id}`} plain onPress={() => void removeEvent($, event)}>
+                    <Text dimColor size="caption">×</Text>
+                  </Button>
                 </Box>
               )
             })}
@@ -1225,35 +1197,29 @@ export const register: Register = on => {
                 <Text color="diffAdded">+{added}</Text>
                 <Text color="diffRemoved">−{deleted}</Text>
               </Box>
-              <Hint id="changes-pane" hint="Open the side pane with each file's diff" Box={Box} Text={Text}>
-                <Button key="changes-pane" plain onPress={() => void openChangesPane($)}>
-                  <Text dimColor size="caption">⧉</Text>
-                </Button>
-              </Hint>
+              <Button key="changes-pane" plain onPress={() => void openChangesPane($)}>
+                <Text dimColor size="caption">⧉</Text>
+              </Button>
             </Box>
             {isOpen &&
               changed.slice(0, MAX_CHANGES_SHOWN).map(change => (
                 <Box key={`change:${change.path}`} flexDirection="row" columnGap={1}>
                   <ChangeStat change={change} Box={Box} Text={Text} />
                   {/* Opens the pane with this file's diff shown. */}
-                  <Hint id={`band-file:${change.path}`} hint="Show its diff" Box={Box} Text={Text}>
-                    <Button
-                      key={`band-file:${change.path}`}
-                      plain
-                      onPress={() => void showDiff($, change)}
-                    >
-                      <Text dimColor size="caption">{cutStart(change.path, itemWidth - 10)}</Text>
-                    </Button>
-                  </Hint>
+                  <Button
+                    key={`band-file:${change.path}`}
+                    plain
+                    onPress={() => void showDiff($, change)}
+                  >
+                    <Text dimColor size="caption">{cutStart(change.path, itemWidth - 10)}</Text>
+                  </Button>
                 </Box>
               ))}
             {isOpen && changed.length > MAX_CHANGES_SHOWN && (
               // The pane lists every file.
-              <Hint id="changes-more" hint="Open the side pane with every file" Box={Box} Text={Text}>
-                <Button key="changes-more" plain onPress={() => void openChangesPane($)}>
-                  <Text dimColor size="caption">+{changed.length - MAX_CHANGES_SHOWN} more</Text>
-                </Button>
-              </Hint>
+              <Button key="changes-more" plain onPress={() => void openChangesPane($)}>
+                <Text dimColor size="caption">+{changed.length - MAX_CHANGES_SHOWN} more</Text>
+              </Button>
             )}
           </Box>
         )}
