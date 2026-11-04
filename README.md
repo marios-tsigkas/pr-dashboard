@@ -4,7 +4,7 @@ A Claude Code mod that shows, above the prompt, your GitHub PRs for the session'
 
 - **PRs:** review requests, your PRs, assigned, approved, changes requested and failing CI, each a link. Refreshed every 15 minutes, or with ↻.
 - **New:** review requests, approvals, merges and comments since you last looked. Click one to open it, × to clear it.
-- **Calendar:** today's next meetings, the first with its video link, when the Google Calendar connector is connected. In auto mode, allow its `list_events` tool in `permissions.allow` (`mcp__<connector id>__list_events`), since the mod reads it in the background.
+- **Calendar:** today's next meetings (up to three, then "+N more"), the first with its video link, amber within 15 minutes. Refreshed every 5 minutes. Needs the Google Calendar connector; see [Calendar](#calendar).
 - **Uncommitted:** changed files with +/− lines. Click a file, ⧉ or `/changes` for a side pane with each file's diff.
 
 ## Install
@@ -25,6 +25,14 @@ claude plugin install pr-dashboard@marios-tsigkas
 ```
 
 It needs the [GitHub CLI](https://cli.github.com) logged in (`gh auth login`) and `git`.
+
+## Calendar
+
+1. Connect Google Calendar in your claude.ai connectors and sign in to it (`/mcp`).
+2. Ask Claude to enable it: type `/pr-dashboard:enable-calendar`. It finds your connector and, once you agree, adds its read-only `list_events` tool to `permissions.allow` in `~/.claude/settings.json`. The mod reads the calendar in the background, so in auto mode the call is refused without that rule.
+3. Run `/reload-plugins`.
+
+Without the connector, or when it fails, the row stays hidden. All-day, cancelled and declined events are left out.
 
 ## Develop
 
