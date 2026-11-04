@@ -29,6 +29,9 @@ export type Change = { path: string; added: number | null; deleted: number | nul
 // lines left out past the cap.
 export type Diff = { source: string; omittedLines: number }
 
+// One of today's meetings from the Google Calendar connector: start and end in ms, and its video link if it has one.
+export type Meeting = { start: number; end: number; title: string; link: string | null }
+
 declare module 'claude-code' {
   interface PluginState {
     'pr-dashboard': {
@@ -41,6 +44,8 @@ declare module 'claude-code' {
       // Paths whose diff is open in the pane, and each one's diff as last read.
       expanded: string[]
       diffs: Record<string, Diff>
+      // Today's meetings not yet over; null without the Google Calendar connector, or when it fails.
+      agenda: Meeting[] | null
     }
   }
 }

@@ -4,6 +4,7 @@ A Claude Code mod that shows, above the prompt, your GitHub PRs for the session'
 
 - **PRs:** review requests, your PRs, assigned, approved, changes requested and failing CI, each a link. Refreshed every 15 minutes, or with ↻.
 - **New:** review requests, approvals, merges and comments since you last looked. Click one to open it, × to clear it.
+- **Calendar:** today's next meetings, the first with its video link, when the Google Calendar connector is connected. In auto mode, allow its `list_events` tool in `permissions.allow` (`mcp__<connector id>__list_events`), since the mod reads it in the background.
 - **Uncommitted:** changed files with +/− lines. Click a file, ⧉ or `/changes` for a side pane with each file's diff.
 
 ## Install

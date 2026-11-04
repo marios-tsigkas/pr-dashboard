@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { Elements, EngineInterface, Register } from 'claude-code'
 
-import type { Change, Counts, Diff, Pr, PrEvent, PrEventKind } from '../types'
+import type { Change, Counts, Diff, Meeting, Pr, PrEvent, PrEventKind } from '../types'
 
 const REFRESH_MS = 15 * 60 * 1000
 // Sessions share one fetch through $.store; a cache younger than this is reused.
@@ -153,6 +153,7 @@ const changes = atom({ plugin: 'pr-dashboard', key: 'changes' } as const, null)
 const isChangesOpen = atom({ plugin: 'pr-dashboard', key: 'isChangesOpen' } as const, true)
 const expanded = atom({ plugin: 'pr-dashboard', key: 'expanded' } as const, [])
 const diffs = atom({ plugin: 'pr-dashboard', key: 'diffs' } as const, {})
+const agenda = atom({ plugin: 'pr-dashboard', key: 'agenda' } as const, null)
 
 const toPr = (pr: GhPr): Pr => ({
   url: pr.url,
@@ -833,7 +834,11 @@ const DiffRuns = ({ diff, path, onAdd, Box, Button, Code, Text }: DiffRunsProps)
                 {part.lines.map((line, k) => (
                   // In by the code cards' border and padding, so the numbers line up with theirs.
                   <Box key={`line:${i}:${k}`} flexDirection="row" columnGap={1} paddingLeft={1}>
-                    <Text mono dimColor>{gutterOf(part, k)}</Text>
+                    {/* The gutter never shrinks, so a narrow pane wraps the code, not the number. */}
+                    <Box flexShrink={0}>
+                      <Text mono dimColor wrap="truncate-end">{gutterOf(part, k)}</Text>
+                    </Box>
+                    <Box flexShrink={1} minWidth={0}>
                     <Text mono color={side === 'added' ? 'diffAdded' : 'diffRemoved'} wrap="truncate-end">
                       {(lines[k]?.[side] ?? [{ text: line, isChanged: false }]).map((segment, n) =>
                         segment.isChanged ? (
@@ -845,6 +850,7 @@ const DiffRuns = ({ diff, path, onAdd, Box, Button, Code, Text }: DiffRunsProps)
                         ),
                       )}
                     </Text>
+                    </Box>
                   </Box>
                 ))}
               </Box>
@@ -903,6 +909,69 @@ const ChangeStat = ({ change, Box, Text }: ChangeStatProps) =>
   )
 
 // Tools that can change the working tree; the turn's end catches anything else.
+const AGENDA_MS = 5 * 60 * 1000
+const MAX_MEETINGS_SHOWN = 3
+// The next meeting is flagged once it is this close.
+const SOON_MS = 15 * 60 * 1000
+
+const localStamp = (ms: number) => {
+  const d = new Date(ms)
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}:00`
+}
+
+type CalendarEvent = {
+  summary?: string
+  status?: string
+  conferenceUrl?: string
+  start?: { dateTime?: string }
+  end?: { dateTime?: string }
+  attendees?: { self?: boolean; responseStatus?: string }[]
+}
+
+// list_events answers with the calendar's events, in JSON text or as structured content.
+const parseAgenda = (result: { content: { type: string; text?: string }[]; structuredContent?: unknown }): Meeting[] => {
+  const text = result.content.find(block => block.type === 'text')?.text
+  const data = (result.structuredContent ?? (text ? JSON.parse(text) : {})) as { events?: CalendarEvent[] }
+  return (data.events ?? []).flatMap(event => {
+    // An all-day event has no time, so it is not a meeting; nor is one cancelled or declined.
+    if (!event.start?.dateTime || !event.end?.dateTime || event.status === 'cancelled') return []
+    if (event.attendees?.some(person => person.self && person.responseStatus === 'declined')) return []
+    const link = event.conferenceUrl ?? ''
+    return [
+      {
+        start: new Date(event.start.dateTime).getTime(),
+        end: new Date(event.end.dateTime).getTime(),
+        title: event.summary ?? '(no title)',
+        link: link.startsWith('https://') ? link : null,
+      },
+    ]
+  })
+}
+
+// The Google Calendar connector's list_events, found among the session's tools (its server's id
+// differs per account), else by the connector's name. Without the connector the row stays hidden.
+const CALENDAR_NAMES = ['claude.ai Google Calendar', 'Google Calendar']
+
+const calendarServers = async ($: EngineInterface) => {
+  const tools = await $.tool.list().catch(() => [])
+  const found = tools.filter(t => t.mcp && t.name.endsWith('__list_events') && /calendar/i.test(t.description))
+  return [...found.map(tool => tool.name.split('__')[1] ?? ''), ...CALENDAR_NAMES].filter(Boolean)
+}
+
+const refreshAgenda = async ($: EngineInterface) => {
+  const now = await $.clock.now()
+  const tomorrow = new Date(now)
+  tomorrow.setHours(24, 0, 0, 0)
+  const args = { startTime: localStamp(now), endTime: localStamp(tomorrow.getTime()), orderBy: 'startTime', pageSize: 50 }
+  for (const server of await calendarServers($)) {
+    const result = await $.mcp.call(server, 'list_events', args).catch(() => null)
+    if (result === null) continue
+    return update($, agenda, () => (result.isError ? null : parseAgenda(result)))
+  }
+  await update($, agenda, () => null)
+}
+
 const WRITING_TOOLS = new Set(['Edit', 'Write', 'NotebookEdit', 'Bash'])
 // Polling starts once something draws: at session start under the terminal REPL, else on the
 // first band draw (the desktop app runs sessions through the SDK, which reports no surface at
@@ -918,6 +987,8 @@ const start = async ($: EngineInterface) => {
     void refresh($)
   })
   void refresh($)
+  $.clock.every(AGENDA_MS, () => void refreshAgenda($))
+  void refreshAgenda($)
   // The pane opens only when asked: a file, ⧉ or /changes.
   void refreshChanges($)
 }
@@ -1064,8 +1135,10 @@ export const register: Register = on => {
     if (!isStarted) $.clock.after(0, () => void start($))
     const snap = await read($, snapshot)
     const changed = (await read($, changes)) ?? []
+    const now = await $.clock.now()
+    const meetings = ((await read($, agenda)) ?? []).filter(meeting => meeting.end > now)
     // Uncommitted shows on its own while the PR data is still on its way.
-    if (e.props.hasSurvey || (snap === null && changed.length === 0)) return next(e)
+    if (e.props.hasSurvey || (snap === null && changed.length === 0 && meetings.length === 0)) return next(e)
 
     const isPrsHidden = await read($, isHidden)
     const events = snap ? await read($, fresh) : []
@@ -1157,6 +1230,27 @@ export const register: Register = on => {
                 <Text dimColor size="caption">hide</Text>
               </Button>
             </Box>
+          </Box>
+        )}
+        {meetings.length > 0 && (
+          // Clock times, not "in 12m": the band redraws on new data, not every minute.
+          <Box flexDirection="row" flexWrap="wrap" columnGap={2}>
+            {meetings.slice(0, MAX_MEETINGS_SHOWN).map((meeting, i) => (
+              <Box key={`meeting:${meeting.start}:${i}`} flexShrink={0} columnGap={1}>
+                <Text
+                  {...(i === 0 ? { color: meeting.start - now < SOON_MS ? 'warning' : 'text' } : { dimColor: true })}
+                >
+                  {i === 0 ? '📅 ' : ''}
+                  {meeting.start <= now ? 'now' : clockTime(meeting.start)} {cut(meeting.title, 40)}
+                </Text>
+                {i === 0 && meeting.link && <Link href={meeting.link}>↗</Link>}
+              </Box>
+            ))}
+            {meetings.length > MAX_MEETINGS_SHOWN && (
+              <Box flexShrink={0}>
+                <Text dimColor size="caption">+{meetings.length - MAX_MEETINGS_SHOWN} more</Text>
+              </Box>
+            )}
           </Box>
         )}
         {!isPrsHidden && events.length > 0 && (

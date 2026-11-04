@@ -49,6 +49,9 @@ type Gh = {
   openFails?: boolean
   // Other work trees by root, with what git prints inside each.
   trees?: Record<string, { numstat?: string; untracked?: string }>
+  // Today's meetings as `[minutes from now, minutes long, title, link]`; undefined means no Google
+  // Calendar connector, 'failing' a connector whose calls fail.
+  calendar?: [number, number, string, string][] | 'failing'
 }
 
 const note = (login: string, createdAt: string, url: string, typename = 'User'): Note => ({
@@ -135,6 +138,27 @@ const fakeGh = (on: On, gh: Gh) => {
         },
       }),
     )
+  })
+  on('tool.list', () => ({
+    value:
+      gh.calendar === undefined
+        ? []
+        : [{ name: 'mcp__cal-1__list_events', description: 'Returns events on the given calendar', mcp: true }],
+  }))
+  on('mcp.call', async ($, e) => {
+    if (e.server !== 'cal-1' || e.tool !== 'list_events' || gh.calendar === undefined) throw new Error('no such server')
+    if (gh.calendar === 'failing') return { value: { content: [{ type: 'text', text: 'auth required' }], isError: true } }
+    // The agenda runs from its startTime (now), local time.
+    const from = new Date(String(e.args.startTime)).getTime()
+    const iso = (ms: number) => new Date(ms).toISOString()
+    const events = gh.calendar.map(([inMin, lengthMin, title, link]) => ({
+      summary: title,
+      status: 'confirmed',
+      start: { dateTime: iso(from + inMin * 60_000) },
+      end: { dateTime: iso(from + (inMin + lengthMin) * 60_000) },
+      ...(link && { conferenceUrl: link }),
+    }))
+    return { value: { content: [{ type: 'text', text: JSON.stringify({ events }) }], isError: false } }
   })
   on('session.start', ($, e) => ({ cwd: e.cwd }))
   return calls
@@ -979,3 +1003,45 @@ test('＋ chat puts a diff run, with its file and lines, into the prompt', async
   ])
   await pane.unmount()
 })
+
+test('with calendar access, the band lists the next meetings, the first with its video link', async ($, on) => {
+  const clock = mock.clock(on)
+  mock.store(on)
+  fakeGh(on, {
+    reviews: [],
+    mine: [],
+    calendar: [
+      [10, 30, 'Udemy sync', 'https://meet.google.com/abc-defg-hij'],
+      [120, 60, 'FE guild', ''],
+      [240, 30, '1:1', ''],
+      [300, 30, 'Retro', ''],
+    ],
+  })
+
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  await clock.advance(1)
+  const ui = await $.ui.mount({ plugin: 'pr-dashboard', surface: 'desktop', ...BAND })
+  const texts = (await ui.findAll({ type: 'Text' })).map(t => t.text ?? '')
+  expect(texts.some(text => /^📅 \d\d:\d\d Udemy sync$/.test(text))).toBe(true)
+  expect(texts.some(text => /^\d\d:\d\d FE guild$/.test(text))).toBe(true)
+  expect(texts).toContain('+1 more')
+  expect(await ui.find({ type: 'Link', text: '↗' })).toBeDefined()
+})
+
+for (const [name, calendar] of [
+  ['without the Google Calendar connector', undefined],
+  ['when the Google Calendar connector fails', 'failing'],
+] as const) {
+  test(`${name}, no calendar row shows and the PRs still do`, async ($, on) => {
+    const clock = mock.clock(on)
+    mock.store(on)
+    fakeGh(on, { reviews: [pr(1)], mine: [], calendar })
+
+    await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+    await clock.advance(1)
+    const ui = await $.ui.mount({ plugin: 'pr-dashboard', surface: 'desktop', ...BAND })
+    expect(await ui.find({ type: 'Link', text: /Reviews 1$/ })).toBeDefined()
+    const texts = (await ui.findAll({ type: 'Text' })).map(t => t.text ?? '')
+    expect(texts.some(text => text.includes('📅'))).toBe(false)
+  })
+}
