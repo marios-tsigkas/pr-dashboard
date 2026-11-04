@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { Elements, EngineInterface, Register } from 'claude-code'
 
-import type { Change, Counts, Diff, Meeting, Pr, PrEvent, PrEventKind } from '../types'
+import type { Change, ChatLink, Counts, Diff, Meeting, Pr, PrEvent, PrEventKind } from '../types'
 
 const REFRESH_MS = 15 * 60 * 1000
 // Sessions share one fetch through $.store; a cache younger than this is reused.
@@ -154,6 +154,7 @@ const isChangesOpen = atom({ plugin: 'pr-dashboard', key: 'isChangesOpen' } as c
 const expanded = atom({ plugin: 'pr-dashboard', key: 'expanded' } as const, [])
 const diffs = atom({ plugin: 'pr-dashboard', key: 'diffs' } as const, {})
 const agenda = atom({ plugin: 'pr-dashboard', key: 'agenda' } as const, null)
+const chatLinks = atom({ plugin: 'pr-dashboard', key: 'chatLinks' } as const, [])
 
 const toPr = (pr: GhPr): Pr => ({
   url: pr.url,
@@ -972,6 +973,46 @@ const refreshAgenda = async ($: EngineInterface) => {
   await update($, agenda, () => null)
 }
 
+const MAX_LINKS_SHOWN = 4
+// A mark per service in place of its name, to keep the row short.
+const LINK_ICONS: Record<ChatLink['kind'], string> = { Asana: '☑', Figma: '🎨', Confluence: '📘', Claude: '✳️' }
+const URL_PATTERN = /https:\/\/[^\s<>()"'`\]]+/g
+const words = (slug: string) => decodeURIComponent(slug).replace(/[-+_]+/g, ' ').trim()
+
+// What a URL names, if it is an Asana task, a Figma file, a Confluence page or a Claude artifact or design.
+const toChatLink = (raw: string): ChatLink | null => {
+  const url = raw.replace(/[.,;:!?]+$/, '')
+  const asana = url.match(/^https:\/\/app\.asana\.com\/.*?(\d{6,})(?:\/f)?\/?(?:\?.*)?$/)
+  if (asana) return { kind: 'Asana', url, label: `task …${asana[1]?.slice(-6)}` }
+  const figma = url.match(/^https:\/\/(?:www\.)?figma\.com\/(?:design|file|board|proto)\/[^/?#]+(?:\/([^/?#]+))?/)
+  if (figma) return { kind: 'Figma', url, label: figma[1] ? words(figma[1]) : 'file' }
+  const confluence = url.match(/^https:\/\/[\w-]+\.atlassian\.net\/wiki\/.*?\/pages\/\d+(?:\/([^/?#]+))?/)
+  if (confluence) return { kind: 'Confluence', url, label: confluence[1] ? words(confluence[1]) : 'page' }
+  // claude.ai/artifact/<id>, claude.ai/code/artifact/<id>, or a Claude Design link.
+  const claude = url.match(/^https:\/\/claude\.ai\/(?:code\/)?(artifact|design)s?\/([\w-]+)/)
+  if (claude) return { kind: 'Claude', url, label: `${claude[1]} ${claude[2]?.slice(0, 8)}` }
+  return null
+}
+
+// Links in what you and Claude wrote in this chat (newest first; tool output is left out), then
+// in the description of the open PR for the work tree's branch.
+const refreshChatLinks = async ($: EngineInterface) => {
+  const messages = await $.session.messages().catch(() => [])
+  const pr = await runGit($, ['gh', 'pr', 'view', '--json', 'body'])
+  const body = pr?.exitCode === 0 ? ((JSON.parse(pr.stdout) as { body?: string }).body ?? '') : ''
+  const texts = [...messages.map(message => message.text).reverse(), body]
+  const seen = new Set<string>()
+  const found = texts
+    .flatMap(text => [...text.matchAll(URL_PATTERN)].map(m => m[0]))
+    .flatMap(raw => {
+      const link = toChatLink(raw)
+      if (!link || seen.has(link.url)) return []
+      seen.add(link.url)
+      return [link]
+    })
+  await update($, chatLinks, () => found)
+}
+
 const WRITING_TOOLS = new Set(['Edit', 'Write', 'NotebookEdit', 'Bash'])
 // Polling starts once something draws: at session start under the terminal REPL, else on the
 // first band draw (the desktop app runs sessions through the SDK, which reports no surface at
@@ -989,6 +1030,7 @@ const start = async ($: EngineInterface) => {
   void refresh($)
   $.clock.every(AGENDA_MS, () => void refreshAgenda($))
   void refreshAgenda($)
+  void refreshChatLinks($)
   // The pane opens only when asked: a file, ⧉ or /changes.
   void refreshChanges($)
 }
@@ -1126,6 +1168,7 @@ export const register: Register = on => {
   on('turn.complete', async ($, e, next) => {
     const result = await next(e)
     if (isStarted) void refreshChanges($)
+    if (isStarted) void refreshChatLinks($)
 
     return result
   })
@@ -1137,8 +1180,9 @@ export const register: Register = on => {
     const changed = (await read($, changes)) ?? []
     const now = await $.clock.now()
     const meetings = ((await read($, agenda)) ?? []).filter(meeting => meeting.end > now)
+    const links = await read($, chatLinks)
     // Uncommitted shows on its own while the PR data is still on its way.
-    if (e.props.hasSurvey || (snap === null && changed.length === 0 && meetings.length === 0)) return next(e)
+    if (e.props.hasSurvey || (snap === null && changed.length === 0 && meetings.length === 0 && links.length === 0)) return next(e)
 
     const isPrsHidden = await read($, isHidden)
     const events = snap ? await read($, fresh) : []
@@ -1249,6 +1293,20 @@ export const register: Register = on => {
             {meetings.length > MAX_MEETINGS_SHOWN && (
               <Box flexShrink={0}>
                 <Text dimColor size="caption">+{meetings.length - MAX_MEETINGS_SHOWN} more</Text>
+              </Box>
+            )}
+          </Box>
+        )}
+        {links.length > 0 && (
+          <Box flexDirection="row" flexWrap="wrap" columnGap={2}>
+            {links.slice(0, MAX_LINKS_SHOWN).map(link => (
+              <Box key={`link:${link.url}`} flexShrink={0}>
+                <Link href={link.url}>{`${LINK_ICONS[link.kind]} ${cut(link.label, 30)}`}</Link>
+              </Box>
+            ))}
+            {links.length > MAX_LINKS_SHOWN && (
+              <Box flexShrink={0}>
+                <Text dimColor size="caption">+{links.length - MAX_LINKS_SHOWN} more</Text>
               </Box>
             )}
           </Box>

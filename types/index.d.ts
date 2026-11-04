@@ -32,6 +32,9 @@ export type Diff = { source: string; omittedLines: number }
 // One of today's meetings from the Google Calendar connector: start and end in ms, and its video link if it has one.
 export type Meeting = { start: number; end: number; title: string; link: string | null }
 
+// A work link this chat mentioned: Asana, Figma, Confluence or a Claude artifact or design, with a short name from its URL.
+export type ChatLink = { kind: 'Asana' | 'Figma' | 'Confluence' | 'Claude'; url: string; label: string }
+
 declare module 'claude-code' {
   interface PluginState {
     'pr-dashboard': {
@@ -46,6 +49,8 @@ declare module 'claude-code' {
       diffs: Record<string, Diff>
       // Today's meetings not yet over; null without the Google Calendar connector, or when it fails.
       agenda: Meeting[] | null
+      // Newest first, one per URL.
+      chatLinks: ChatLink[]
     }
   }
 }

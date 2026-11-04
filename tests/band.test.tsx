@@ -52,6 +52,8 @@ type Gh = {
   // Today's meetings as `[minutes from now, minutes long, title, link]`; undefined means no Google
   // Calendar connector, 'failing' a connector whose calls fail.
   calendar?: [number, number, string, string][] | 'failing'
+  // The description of the open PR for the branch; undefined means the branch has none.
+  prBody?: string
 }
 
 const note = (login: string, createdAt: string, url: string, typename = 'User'): Note => ({
@@ -89,6 +91,7 @@ const fakeGh = (on: On, gh: Gh) => {
     const tree = e.init?.cwd ? gh.trees?.[e.init.cwd] : undefined
     if (tree && cmd === 'git' && sub === 'diff') return ok((tree.numstat ?? '').split('\n').filter(Boolean).map(line => `${line}\0`).join(''))
     if (tree && cmd === 'git' && sub === 'ls-files') return ok((tree.untracked ?? '').split('\n').filter(Boolean).map(line => `${line}\0`).join(''))
+    if (cmd === 'gh' && sub === 'pr') return gh.prBody === undefined ? ok('', 1) : ok(JSON.stringify({ body: gh.prBody }))
     if (cmd === 'open' || cmd === 'xdg-open') {
       if (gh.openFails) return ok('', 1)
       opened.push(e.argv[1] ?? '')
@@ -1045,3 +1048,38 @@ for (const [name, calendar] of [
     expect(texts.some(text => text.includes('📅'))).toBe(false)
   })
 }
+
+test('Asana, Figma and Confluence links from the chat show in the band, newest first, once each', async ($, on) => {
+  const clock = mock.clock(on)
+  mock.store(on)
+  fakeGh(on, { reviews: [], mine: [] })
+  on('session.messages', () => ({
+    value: [
+      { role: 'user', text: 'Ticket: https://app.asana.com/0/1201/1213960584123456/f and design https://www.figma.com/design/AbC123/Udemy-Integration?node-id=1-2', toolUses: [] },
+      { role: 'assistant', text: 'Spec is at https://acme.atlassian.net/wiki/spaces/ENG/pages/98765/Udemy+Catalog. Also https://github.com/o/r/pull/1 and https://claude.ai/code/artifact/3f2a9c1e-77aa-4b1c-9d00-123456789abc', toolUses: [] },
+      { role: 'user', text: 'Same ticket https://app.asana.com/0/1201/1213960584123456/f', toolUses: [] },
+    ],
+  }))
+
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  await clock.advance(1)
+  const ui = await $.ui.mount({ plugin: 'pr-dashboard', surface: 'desktop', ...BAND })
+  const links = (await ui.findAll({ type: 'Link' })).map(l => l.text ?? '').map(text => text.replace(/^https:\S+?(?=(☑|🎨|📘|✳️) )/, '')).filter(text => /^(☑|🎨|📘|✳️) /.test(text))
+  expect(links).toEqual(['☑ task …123456', '📘 Udemy Catalog', '✳️ artifact 3f2a9c1e', '🎨 Udemy Integration'])
+})
+
+test('links in the description of the branch PR show after the chat ones', async ($, on) => {
+  const clock = mock.clock(on)
+  mock.store(on)
+  fakeGh(on, {
+    reviews: [],
+    mine: [],
+    prBody: 'Closes https://app.asana.com/0/1201/1213960584999999/f\n\nDesign: https://www.figma.com/design/XyZ/Card-Duration',
+  })
+
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  await clock.advance(1)
+  const ui = await $.ui.mount({ plugin: 'pr-dashboard', surface: 'desktop', ...BAND })
+  const links = (await ui.findAll({ type: 'Link' })).map(l => l.text ?? '').map(text => text.replace(/^https:\S+?(?=(☑|🎨|📘|✳️) )/, '')).filter(text => /^(☑|🎨|📘|✳️) /.test(text))
+  expect(links).toEqual(['☑ task …999999', '🎨 Card Duration'])
+})
