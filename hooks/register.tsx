@@ -149,12 +149,35 @@ type ActivitySeen = Record<string, string>
 const snapshot = atom({ plugin: 'pr-dashboard', key: 'snapshot' } as const, null)
 const fresh = atom({ plugin: 'pr-dashboard', key: 'fresh' } as const, [])
 const isHidden = atom({ plugin: 'pr-dashboard', key: 'isHidden' } as const, false)
-const changes = atom({ plugin: 'pr-dashboard', key: 'changes' } as const, null)
-const isChangesOpen = atom({ plugin: 'pr-dashboard', key: 'isChangesOpen' } as const, true)
-const expanded = atom({ plugin: 'pr-dashboard', key: 'expanded' } as const, [])
+const changes = atom({ plugin: 'pr-dashboard', key: 'changes' } as const, {})
+const isChangesOpen = atom({ plugin: 'pr-dashboard', key: 'isChangesOpen' } as const, {})
+const expanded = atom({ plugin: 'pr-dashboard', key: 'expanded' } as const, {})
 const diffs = atom({ plugin: 'pr-dashboard', key: 'diffs' } as const, {})
+// The app runs every session against one copy of this state: what belongs to a chat is kept
+// under its session id.
+const sessionId = ($: EngineInterface) => $.session.id().catch(() => '')
+const myChanges = async ($: EngineInterface): Promise<Change[] | null> => (await read($, changes))[await sessionId($)] ?? null
+const setMyChanges = async ($: EngineInterface, fn: (value: Change[] | null) => Change[] | null) => {
+  const id = await sessionId($)
+  await update($, changes, all => ({ ...all, [id]: fn(all[id] ?? null) }))
+}
+const myIsChangesOpen = async ($: EngineInterface): Promise<boolean> => (await read($, isChangesOpen))[await sessionId($)] ?? true
+const setMyIsChangesOpen = async ($: EngineInterface, fn: (value: boolean) => boolean) => {
+  const id = await sessionId($)
+  await update($, isChangesOpen, all => ({ ...all, [id]: fn(all[id] ?? true) }))
+}
+const myExpanded = async ($: EngineInterface): Promise<string[]> => (await read($, expanded))[await sessionId($)] ?? []
+const setMyExpanded = async ($: EngineInterface, fn: (value: string[]) => string[]) => {
+  const id = await sessionId($)
+  await update($, expanded, all => ({ ...all, [id]: fn(all[id] ?? []) }))
+}
+const myDiffs = async ($: EngineInterface): Promise<Record<string, Diff>> => (await read($, diffs))[await sessionId($)] ?? {}
+const setMyDiffs = async ($: EngineInterface, fn: (value: Record<string, Diff>) => Record<string, Diff>) => {
+  const id = await sessionId($)
+  await update($, diffs, all => ({ ...all, [id]: fn(all[id] ?? {}) }))
+}
 const agenda = atom({ plugin: 'pr-dashboard', key: 'agenda' } as const, null)
-const chatLinks = atom({ plugin: 'pr-dashboard', key: 'chatLinks' } as const, [])
+const chatLinks = atom({ plugin: 'pr-dashboard', key: 'chatLinks' } as const, {})
 
 const toPr = (pr: GhPr): Pr => ({
   url: pr.url,
@@ -491,9 +514,12 @@ const parseNumstat = (out: string): Change[] => {
 
 // The work tree the chat last wrote to when it is not the session's own: a chat often edits
 // another worktree by absolute path, or `cd`s into it in a command. Null follows the session.
-let workTree: string | null = null
-const runGit = ($: EngineInterface, argv: string[]) =>
-  $.process.run(argv, ...(workTree === null ? [] : [{ cwd: workTree }])).catch(() => null)
+const workTrees = new Map<string, string>()
+const workTreeOf = async ($: EngineInterface) => workTrees.get(await sessionId($)) ?? null
+const runGit = async ($: EngineInterface, argv: string[]) => {
+  const workTree = await workTreeOf($)
+  return $.process.run(argv, ...(workTree === null ? [] : [{ cwd: workTree }])).catch(() => null)
+}
 
 // The absolute folder a tool call writes in: an edited file's, or a command's leading `cd`.
 const touchedDir = (input: Record<string, unknown>): string | null => {
@@ -512,7 +538,9 @@ const followWorkTree = async ($: EngineInterface, input: Record<string, unknown>
   if (top?.exitCode !== 0) return
   const root = top.stdout.trim()
   const own = await $.process.run(['git', 'rev-parse', '--show-toplevel']).catch(() => null)
-  workTree = own?.exitCode === 0 && own.stdout.trim() === root ? null : root
+  const id = await sessionId($)
+  if (own?.exitCode === 0 && own.stdout.trim() === root) workTrees.delete(id)
+  else workTrees.set(id, root)
 }
 
 // Uncommitted work against HEAD (staged and unstaged) plus untracked files; local git only.
@@ -595,64 +623,62 @@ const readDiff = async ($: EngineInterface, change: Change): Promise<Diff> => {
 
 // Re-reads every open diff, dropping those whose file is no longer changed.
 const refreshDiffs = async ($: EngineInterface) => {
-  const list = (await read($, changes)) ?? []
-  const open = (await read($, expanded)).filter(path => list.some(c => c.path === path))
+  const list = (await myChanges($)) ?? []
+  const open = (await myExpanded($)).filter(path => list.some(c => c.path === path))
   const next: Record<string, Diff> = {}
   for (const path of open) {
     const change = list.find(c => c.path === path)
     if (change) next[path] = await readDiff($, change)
   }
-  await update($, expanded, () => open)
-  await update($, diffs, () => next)
+  await setMyExpanded($, () => open)
+  await setMyDiffs($, () => next)
 }
 
 const showDiff = async ($: EngineInterface, change: Change) => {
   const diff = await readDiff($, change)
-  await update($, diffs, all => ({ ...all, [change.path]: diff }))
-  await update($, expanded, open => (open.includes(change.path) ? open : [...open, change.path]))
+  await setMyDiffs($, all => ({ ...all, [change.path]: diff }))
+  await setMyExpanded($, open => (open.includes(change.path) ? open : [...open, change.path]))
   await openChangesPane($, { isWide: true })
 }
 
 const toggleDiff = async ($: EngineInterface, change: Change) => {
-  if ((await read($, expanded)).includes(change.path)) {
-    await update($, expanded, open => open.filter(path => path !== change.path))
+  if ((await myExpanded($)).includes(change.path)) {
+    await setMyExpanded($, open => open.filter(path => path !== change.path))
   } else await showDiff($, change)
 }
 
 // Opens every listed file's diff, or closes them all when every one is open.
 const toggleAllDiffs = async ($: EngineInterface) => {
-  const list = ((await read($, changes)) ?? []).slice(0, MAX_CHANGES_IN_PANE)
-  const open = await read($, expanded)
+  const list = ((await myChanges($)) ?? []).slice(0, MAX_CHANGES_IN_PANE)
+  const open = await myExpanded($)
   if (list.length > 0 && list.every(change => open.includes(change.path))) {
-    await update($, expanded, () => [])
+    await setMyExpanded($, () => [])
     return
   }
   const next: Record<string, Diff> = {}
   for (const change of list) next[change.path] = await readDiff($, change)
-  await update($, diffs, all => ({ ...all, ...next }))
-  await update($, expanded, () => list.map(change => change.path))
+  await setMyDiffs($, all => ({ ...all, ...next }))
+  await setMyExpanded($, () => list.map(change => change.path))
 }
 
 // One read at a time; a request while one runs reruns once after it, so the last read wins in order.
-let isReading = false
-let isRerunWanted = false
+const reading = new Set<string>()
+const rerunWanted = new Set<string>()
 const refreshChanges = async ($: EngineInterface): Promise<void> => {
-  if (isReading) {
-    isRerunWanted = true
+  const id = await sessionId($)
+  if (reading.has(id)) {
+    rerunWanted.add(id)
     return
   }
-  isReading = true
+  reading.add(id)
   try {
     const list = await readChanges($)
-    await update($, changes, () => list)
+    await setMyChanges($, () => list)
     await refreshDiffs($)
   } finally {
-    isReading = false
+    reading.delete(id)
   }
-  if (isRerunWanted) {
-    isRerunWanted = false
-    await refreshChanges($)
-  }
+  if (rerunWanted.delete(id)) await refreshChanges($)
 }
 
 const totalsOf = (list: readonly Change[]) => ({
@@ -1010,7 +1036,8 @@ const refreshChatLinks = async ($: EngineInterface) => {
       seen.add(link.url)
       return [link]
     })
-  await update($, chatLinks, () => found)
+  const session = await sessionId($)
+  await update($, chatLinks, bySession => ({ ...bySession, [session]: found }))
 }
 
 const WRITING_TOOLS = new Set(['Edit', 'Write', 'NotebookEdit', 'Bash'])
@@ -1057,9 +1084,9 @@ export const register: Register = on => {
 
   on('ui.render', { component: 'Pane', requestId: CHANGES_PANE.id }, async ($, e) => {
     const { Box, Button, Code, Text } = $.ui.resolve(e)
-    const changed = await read($, changes)
-    const open = await read($, expanded)
-    const diffOf = await read($, diffs)
+    const changed = await myChanges($)
+    const open = await myExpanded($)
+    const diffOf = await myDiffs($)
     const width = Math.max(20, Math.floor(e.props.bodyColumns * (e.surface === 'terminal' ? 1 : 1.3)) - 10)
     const { added, deleted } = totalsOf(changed ?? [])
 
@@ -1177,10 +1204,10 @@ export const register: Register = on => {
     // A surface is drawing: start polling, from a timer since a draw may not write state.
     if (!isStarted) $.clock.after(0, () => void start($))
     const snap = await read($, snapshot)
-    const changed = (await read($, changes)) ?? []
+    const changed = (await myChanges($)) ?? []
     const now = await $.clock.now()
     const meetings = ((await read($, agenda)) ?? []).filter(meeting => meeting.end > now)
-    const links = await read($, chatLinks)
+    const links = (await read($, chatLinks))[await sessionId($)] ?? []
     // Uncommitted shows on its own while the PR data is still on its way.
     if (e.props.hasSurvey || (snap === null && changed.length === 0 && meetings.length === 0 && links.length === 0)) return next(e)
 
@@ -1196,7 +1223,8 @@ export const register: Register = on => {
     const itemWidth = Math.max(20, Math.floor(e.props.bodyColumns * charsPerCell) - 6)
     const counts = snap?.counts ?? null
     const LINKS = linksFor(snap?.repo ?? null)
-    const isOpen = await read($, isChangesOpen)
+    const isOpen = await myIsChangesOpen($)
+    const workTree = await workTreeOf($)
     const { added, deleted } = totalsOf(changed)
 
     return (
@@ -1343,7 +1371,7 @@ export const register: Register = on => {
         {changed.length > 0 && (
           <Box flexDirection="column">
             <Box flexDirection="row" columnGap={2}>
-              <Button key="changes" plain onPress={() => update($, isChangesOpen, open => !open)}>
+              <Button key="changes" plain onPress={() => setMyIsChangesOpen($, open => !open)}>
                 <Text dimColor>
                   {isOpen ? '▾' : '▸'} Uncommitted{workTree === null ? '' : ` in ${workTree.split('/').at(-1)}`}:{' '}
                   {changed.length} {changed.length === 1 ? 'file' : 'files'}

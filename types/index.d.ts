@@ -41,16 +41,16 @@ declare module 'claude-code' {
       snapshot: Snapshot | null
       fresh: PrEvent[]
       isHidden: boolean
-      // null outside a git repo.
-      changes: Change[] | null
-      isChangesOpen: boolean
+      // These four by session id (state is shared by the app's sessions). null outside a git repo.
+      changes: Record<string, Change[] | null>
+      isChangesOpen: Record<string, boolean>
       // Paths whose diff is open in the pane, and each one's diff as last read.
-      expanded: string[]
-      diffs: Record<string, Diff>
+      expanded: Record<string, string[]>
+      diffs: Record<string, Record<string, Diff>>
       // Today's meetings not yet over; null without the Google Calendar connector, or when it fails.
       agenda: Meeting[] | null
-      // Newest first, one per URL.
-      chatLinks: ChatLink[]
+      // By session id (state is shared by the app's sessions): newest first, one per URL.
+      chatLinks: Record<string, ChatLink[]>
     }
   }
 }
