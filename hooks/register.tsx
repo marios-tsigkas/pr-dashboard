@@ -1041,12 +1041,16 @@ const refreshChatLinks = async ($: EngineInterface) => {
     ),
   )
   const seen = new Set(templateLinks.flatMap(text => [...text.matchAll(URL_PATTERN)].map(m => m[0].replace(/[.,;:!?]+$/, ''))))
+  // The same page under another URL (anchor, query, short form) shows once, by what it reads as.
+  const shown = new Set<string>()
   const found = texts
     .flatMap(text => [...text.matchAll(URL_PATTERN)].map(m => m[0]))
     .flatMap(raw => {
       const link = toChatLink(raw)
-      if (!link || seen.has(link.url)) return []
+      const name = link && `${link.kind}:${link.label}`
+      if (!link || !name || seen.has(link.url) || shown.has(name)) return []
       seen.add(link.url)
+      shown.add(name)
       return [link]
     })
   const session = await sessionId($)

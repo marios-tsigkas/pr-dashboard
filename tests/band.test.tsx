@@ -1064,7 +1064,7 @@ test('Asana, Figma and Confluence links from the chat show in the band, newest f
   on('session.messages', () => ({
     value: [
       { role: 'user', text: 'Ticket: https://app.asana.com/0/1201/1213960584123456/f and design https://www.figma.com/design/AbC123/Udemy-Integration?node-id=1-2', toolUses: [] },
-      { role: 'assistant', text: 'Spec is at https://acme.atlassian.net/wiki/spaces/ENG/pages/98765/Udemy+Catalog. Also https://github.com/o/r/pull/1 and https://claude.ai/code/artifact/3f2a9c1e-77aa-4b1c-9d00-123456789abc', toolUses: [] },
+      { role: 'assistant', text: 'Spec is at https://acme.atlassian.net/wiki/spaces/ENG/pages/98765/Udemy+Catalog. See https://acme.atlassian.net/wiki/spaces/ENG/pages/98765/Udemy+Catalog#Scope again. Also https://github.com/o/r/pull/1 and https://claude.ai/code/artifact/3f2a9c1e-77aa-4b1c-9d00-123456789abc', toolUses: [] },
       { role: 'user', text: 'Same ticket https://app.asana.com/0/1201/1213960584123456/f', toolUses: [] },
     ],
   }))
