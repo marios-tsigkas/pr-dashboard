@@ -4,7 +4,7 @@ A Claude Code mod that shows, above the prompt, your GitHub PRs for the session'
 
 - **PRs:** review requests, your PRs, assigned, approved, changes requested and failing CI, each a link. Refreshed every 15 minutes, or with ↻.
 - **New:** review requests, approvals, merges and comments since you last looked. Click one to open it, × to clear it.
-- **Calendar:** today's next meetings (up to three, then "+N more"), the first with its video link, amber within 15 minutes. Refreshed every 5 minutes. Needs the Google Calendar connector; see [Calendar](#calendar).
+- **Calendar:** today's next meetings (up to three, then "+N more"), each with its video link (↗), the next one amber within 15 minutes. Refreshed every 5 minutes. Needs the Google Calendar connector; see [Calendar](#calendar).
 - **Links:** Asana (☑), Figma (🎨), Confluence (📘) and Claude artifact (✳️) links from this chat and from the branch PR's description, newest first.
 - **Uncommitted:** changed files with +/− lines. Click a file, ⧉ or `/changes` for a side pane with each file's diff.
 

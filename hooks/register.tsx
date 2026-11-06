@@ -947,10 +947,14 @@ const localStamp = (ms: number) => {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}:00`
 }
 
+const VIDEO_LINK = /https?:\/\/(?:meet\.google\.com\/[a-z-]+|[\w-]+\.zoom\.us\/j\/\d+[^\s"'<]*|teams\.microsoft\.com\/l\/meetup-join\/[^\s"'<]+)/
+
 type CalendarEvent = {
   summary?: string
   status?: string
   conferenceUrl?: string
+  description?: string
+  location?: string
   start?: { dateTime?: string }
   end?: { dateTime?: string }
   attendees?: { self?: boolean; responseStatus?: string }[]
@@ -964,7 +968,9 @@ const parseAgenda = (result: { content: { type: string; text?: string }[]; struc
     // An all-day event has no time, so it is not a meeting; nor is one cancelled or declined.
     if (!event.start?.dateTime || !event.end?.dateTime || event.status === 'cancelled') return []
     if (event.attendees?.some(person => person.self && person.responseStatus === 'declined')) return []
-    const link = event.conferenceUrl ?? ''
+    // A call link pasted in the description or location when none is attached as the event's call.
+    const pasted = `${event.location ?? ''} ${event.description ?? ''}`.match(VIDEO_LINK)?.[0]
+    const link = event.conferenceUrl ?? pasted?.replace(/^http:/, 'https:') ?? ''
     return [
       {
         start: new Date(event.start.dateTime).getTime(),
@@ -1027,7 +1033,14 @@ const refreshChatLinks = async ($: EngineInterface) => {
   const pr = await runGit($, ['gh', 'pr', 'view', '--json', 'body'])
   const body = pr?.exitCode === 0 ? ((JSON.parse(pr.stdout) as { body?: string }).body ?? '') : ''
   const texts = [...messages.map(message => message.text).reverse(), body]
-  const seen = new Set<string>()
+  // Links every PR carries from the repo's PR template (checklists, guides) say nothing about this one.
+  const templates = await runGit($, ['git', 'ls-files', '-z', '--', ':(icase)pull_request_template.md', ':(icase)**/pull_request_template.md'])
+  const templateLinks = await Promise.all(
+    (templates?.exitCode === 0 ? templates.stdout.split('\0').filter(Boolean) : []).map(
+      async path => (await runGit($, ['git', 'show', `HEAD:${path}`]))?.stdout ?? '',
+    ),
+  )
+  const seen = new Set(templateLinks.flatMap(text => [...text.matchAll(URL_PATTERN)].map(m => m[0].replace(/[.,;:!?]+$/, ''))))
   const found = texts
     .flatMap(text => [...text.matchAll(URL_PATTERN)].map(m => m[0]))
     .flatMap(raw => {
@@ -1208,6 +1221,21 @@ export const register: Register = on => {
     const now = await $.clock.now()
     const meetings = ((await read($, agenda)) ?? []).filter(meeting => meeting.end > now)
     const links = (await read($, chatLinks))[await sessionId($)] ?? []
+    const { Box, Button, Link, Markdown, Text } = $.ui.resolve(e)
+    const linkItems = [
+      ...links.slice(0, MAX_LINKS_SHOWN).map(link => (
+        <Box key={`link:${link.url}`} flexShrink={0}>
+          <Link href={link.url}>{`${LINK_ICONS[link.kind]} ${cut(link.label, 30)}`}</Link>
+        </Box>
+      )),
+      ...(links.length > MAX_LINKS_SHOWN
+        ? [
+            <Box key="links-more" flexShrink={0}>
+              <Text dimColor size="caption">+{links.length - MAX_LINKS_SHOWN} more</Text>
+            </Box>,
+          ]
+        : []),
+    ]
     // Uncommitted shows on its own while the PR data is still on its way.
     if (e.props.hasSurvey || (snap === null && changed.length === 0 && meetings.length === 0 && links.length === 0)) return next(e)
 
@@ -1216,7 +1244,6 @@ export const register: Register = on => {
     const newReviews = events.filter(event => event.kind === 'review-requested').length
     const commentEvents = events.filter(isComment)
     const [firstComment] = commentEvents
-    const { Box, Button, Link, Markdown, Text } = $.ui.resolve(e)
     // One line per item, cut to the band's width. bodyColumns counts terminal cells; other surfaces
     // draw a proportional font that fits about 1.3 characters per cell (measured on the desktop app).
     const charsPerCell = e.surface === 'terminal' ? 1 : 1.3
@@ -1315,7 +1342,7 @@ export const register: Register = on => {
                   {i === 0 ? '📅 ' : ''}
                   {meeting.start <= now ? 'now' : clockTime(meeting.start)} {cut(meeting.title, 40)}
                 </Text>
-                {i === 0 && meeting.link && <Link href={meeting.link}>↗</Link>}
+                {meeting.link && <Link href={meeting.link}>↗</Link>}
               </Box>
             ))}
             {meetings.length > MAX_MEETINGS_SHOWN && (
@@ -1325,18 +1352,10 @@ export const register: Register = on => {
             )}
           </Box>
         )}
-        {links.length > 0 && (
+        {/* With no uncommitted files the links have a row of their own. */}
+        {links.length > 0 && changed.length === 0 && (
           <Box flexDirection="row" flexWrap="wrap" columnGap={2}>
-            {links.slice(0, MAX_LINKS_SHOWN).map(link => (
-              <Box key={`link:${link.url}`} flexShrink={0}>
-                <Link href={link.url}>{`${LINK_ICONS[link.kind]} ${cut(link.label, 30)}`}</Link>
-              </Box>
-            ))}
-            {links.length > MAX_LINKS_SHOWN && (
-              <Box flexShrink={0}>
-                <Text dimColor size="caption">+{links.length - MAX_LINKS_SHOWN} more</Text>
-              </Box>
-            )}
+            {linkItems}
           </Box>
         )}
         {!isPrsHidden && events.length > 0 && (
@@ -1370,7 +1389,8 @@ export const register: Register = on => {
         )}
         {changed.length > 0 && (
           <Box flexDirection="column">
-            <Box flexDirection="row" columnGap={2}>
+            <Box flexDirection="row" flexWrap="wrap" columnGap={2}>
+              {linkItems}
               <Button key="changes" plain onPress={() => setMyIsChangesOpen($, open => !open)}>
                 <Text dimColor>
                   {isOpen ? '▾' : '▸'} Uncommitted{workTree === null ? '' : ` in ${workTree.split('/').at(-1)}`}:{' '}

@@ -54,6 +54,8 @@ type Gh = {
   calendar?: [number, number, string, string][] | 'failing'
   // The description of the open PR for the branch; undefined means the branch has none.
   prBody?: string
+  // The repo's PR template, at .github/pull_request_template.md.
+  prTemplate?: string
 }
 
 const note = (login: string, createdAt: string, url: string, typename = 'User'): Note => ({
@@ -91,6 +93,10 @@ const fakeGh = (on: On, gh: Gh) => {
     const tree = e.init?.cwd ? gh.trees?.[e.init.cwd] : undefined
     if (tree && cmd === 'git' && sub === 'diff') return ok((tree.numstat ?? '').split('\n').filter(Boolean).map(line => `${line}\0`).join(''))
     if (tree && cmd === 'git' && sub === 'ls-files') return ok((tree.untracked ?? '').split('\n').filter(Boolean).map(line => `${line}\0`).join(''))
+    if (cmd === 'git' && sub === 'ls-files' && e.argv.some(arg => arg.includes('pull_request_template'))) {
+      return ok(gh.prTemplate === undefined ? '' : '.github/pull_request_template.md\0')
+    }
+    if (cmd === 'git' && sub === 'show') return ok(gh.prTemplate ?? '')
     if (cmd === 'gh' && sub === 'pr') return gh.prBody === undefined ? ok('', 1) : ok(JSON.stringify({ body: gh.prBody }))
     if (cmd === 'open' || cmd === 'xdg-open') {
       if (gh.openFails) return ok('', 1)
@@ -159,7 +165,8 @@ const fakeGh = (on: On, gh: Gh) => {
       status: 'confirmed',
       start: { dateTime: iso(from + inMin * 60_000) },
       end: { dateTime: iso(from + (inMin + lengthMin) * 60_000) },
-      ...(link && { conferenceUrl: link }),
+      // A link written as `pasted:<url>` is in the description only, as some invites carry it.
+      ...(link.startsWith('pasted:') ? { description: `<p>Join <a href="${link.slice(7)}">online</a></p>` } : link && { conferenceUrl: link }),
     }))
     return { value: { content: [{ type: 'text', text: JSON.stringify({ events }) }], isError: false } }
   })
@@ -1007,7 +1014,7 @@ test('＋ chat puts a diff run, with its file and lines, into the prompt', async
   await pane.unmount()
 })
 
-test('with calendar access, the band lists the next meetings, the first with its video link', async ($, on) => {
+test('with calendar access, the band lists the next meetings, each with its video link, attached or pasted', async ($, on) => {
   const clock = mock.clock(on)
   mock.store(on)
   fakeGh(on, {
@@ -1015,7 +1022,7 @@ test('with calendar access, the band lists the next meetings, the first with its
     mine: [],
     calendar: [
       [10, 30, 'Udemy sync', 'https://meet.google.com/abc-defg-hij'],
-      [120, 60, 'FE guild', ''],
+      [120, 60, 'FE guild', 'pasted:http://meet.google.com/xyz-abcd-efg'],
       [240, 30, '1:1', ''],
       [300, 30, 'Retro', ''],
     ],
@@ -1028,7 +1035,8 @@ test('with calendar access, the band lists the next meetings, the first with its
   expect(texts.some(text => /^📅 \d\d:\d\d Udemy sync$/.test(text))).toBe(true)
   expect(texts.some(text => /^\d\d:\d\d FE guild$/.test(text))).toBe(true)
   expect(texts).toContain('+1 more')
-  expect(await ui.find({ type: 'Link', text: '↗' })).toBeDefined()
+  const calls = (await ui.findAll({ type: 'Link' })).map(l => l.text ?? '').filter(text => text.endsWith('↗'))
+  expect(calls).toEqual(['https://meet.google.com/abc-defg-hij↗', 'https://meet.google.com/xyz-abcd-efg↗'])
 })
 
 for (const [name, calendar] of [
@@ -1068,13 +1076,15 @@ test('Asana, Figma and Confluence links from the chat show in the band, newest f
   expect(links).toEqual(['☑ task …123456', '📘 Udemy Catalog', '✳️ artifact 3f2a9c1e', '🎨 Udemy Integration'])
 })
 
-test('links in the description of the branch PR show after the chat ones', async ($, on) => {
+test('links in the description of the branch PR show after the chat ones; those from the PR template do not', async ($, on) => {
   const clock = mock.clock(on)
   mock.store(on)
   fakeGh(on, {
     reviews: [],
     mine: [],
-    prBody: 'Closes https://app.asana.com/0/1201/1213960584999999/f\n\nDesign: https://www.figma.com/design/XyZ/Card-Duration',
+    prBody:
+      'Closes https://app.asana.com/0/1201/1213960584999999/f\n\nDesign: https://www.figma.com/design/XyZ/Card-Duration\n\n- [ ] [Checklist](https://acme.atlassian.net/wiki/spaces/JS/pages/31396/Code+Review+Checklist)',
+    prTemplate: '- [ ] [Checklist](https://acme.atlassian.net/wiki/spaces/JS/pages/31396/Code+Review+Checklist)',
   })
 
   await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })

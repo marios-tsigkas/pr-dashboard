@@ -47,7 +47,7 @@ declare module 'claude-code' {
       // Paths whose diff is open in the pane, and each one's diff as last read.
       expanded: Record<string, string[]>
       diffs: Record<string, Record<string, Diff>>
-      // Today's meetings not yet over; null without the Google Calendar connector, or when it fails.
+      // Today's meetings not yet over, each with its video link when it has one; null without the Google Calendar connector, or when it fails.
       agenda: Meeting[] | null
       // By session id (state is shared by the app's sessions): newest first, one per URL.
       chatLinks: Record<string, ChatLink[]>
