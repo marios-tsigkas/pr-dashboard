@@ -491,6 +491,11 @@ const openEvent = async ($: EngineInterface, event: PrEvent) => {
   else $.ui.toast(`Couldn't open ${event.href ?? event.pr.url}`)
 }
 
+// One at a time: each open removes its event from the shared list.
+const openEvents = async ($: EngineInterface, events: PrEvent[]) => {
+  for (const event of events) await openEvent($, event)
+}
+
 // `git diff --numstat -z`: `added\tdeleted\tpath\0`, or for a rename `added\tdeleted\t\0old\0new\0`.
 const parseNumstat = (out: string): Change[] => {
   const parts = out.split('\0')
@@ -514,8 +519,14 @@ const parseNumstat = (out: string): Change[] => {
 
 // The work tree the chat last wrote to when it is not the session's own: a chat often edits
 // another worktree by absolute path, or `cd`s into it in a command. Null follows the session.
-const workTrees = new Map<string, string>()
-const workTreeOf = async ($: EngineInterface) => workTrees.get(await sessionId($)) ?? null
+// Kept in the store too, so a plugin reload doesn't send the chat back to the session's folder.
+const workTrees = new Map<string, string | null>()
+const workTreeKey = (id: string) => `workTree:${id}`
+const workTreeOf = async ($: EngineInterface) => {
+  const id = await sessionId($)
+  if (!workTrees.has(id)) workTrees.set(id, ((await $.store.get(workTreeKey(id))) as string | undefined) || null)
+  return workTrees.get(id) ?? null
+}
 const runGit = async ($: EngineInterface, argv: string[]) => {
   const workTree = await workTreeOf($)
   return $.process.run(argv, ...(workTree === null ? [] : [{ cwd: workTree }])).catch(() => null)
@@ -539,8 +550,10 @@ const followWorkTree = async ($: EngineInterface, input: Record<string, unknown>
   const root = top.stdout.trim()
   const own = await $.process.run(['git', 'rev-parse', '--show-toplevel']).catch(() => null)
   const id = await sessionId($)
-  if (own?.exitCode === 0 && own.stdout.trim() === root) workTrees.delete(id)
-  else workTrees.set(id, root)
+  const workTree = own?.exitCode === 0 && own.stdout.trim() === root ? null : root
+  if (workTrees.get(id) === workTree) return
+  workTrees.set(id, workTree)
+  await $.store.set(workTreeKey(id), workTree ?? '')
 }
 
 // Uncommitted work against HEAD (staged and unstaged) plus untracked files; local git only.
@@ -1318,7 +1331,10 @@ export const register: Register = on => {
             )}
             {commentEvents.length > 1 && (
               <Box flexShrink={0}>
-                <Link href={LINKS.recent}>💬 {commentEvents.length} new</Link>
+                {/* GitHub has no search for just these PRs, so each new comment opens in its own tab. */}
+                <Button key="comments" plain onPress={() => void openEvents($, commentEvents)}>
+                  <Text color="suggestion">💬 {commentEvents.length} new</Text>
+                </Button>
               </Box>
             )}
             <Box flexShrink={0}>

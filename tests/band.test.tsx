@@ -295,7 +295,7 @@ test('new comments on my PRs and replies on PRs I reviewed; mine and bots ignore
     const band = await $.ui.mount({ plugin: 'pr-dashboard', surface, ...BAND })
     expect(await hasNews(band, /^\[comment by bob #7/)).toBe(true)
     // Several: a link to the repo's recently updated PRs.
-    expect(await band.find({ type: 'Link', text: /involves%3A%40me.*💬 2 new/ })).toBeDefined()
+    expect(await band.find({ type: 'Text', text: '💬 2 new' })).toBeDefined()
     await band.unmount()
   }
 })
