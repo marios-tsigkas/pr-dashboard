@@ -51,6 +51,7 @@ declare module 'claude-code' {
       agenda: Meeting[] | null
       // By session id (state is shared by the app's sessions): newest first, one per URL.
       chatLinks: Record<string, ChatLink[]>
+      contextTokens: Record<string, number>
     }
   }
 }

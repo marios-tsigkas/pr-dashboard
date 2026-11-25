@@ -178,6 +178,9 @@ const setMyDiffs = async ($: EngineInterface, fn: (value: Record<string, Diff>) 
 }
 const agenda = atom({ plugin: 'pr-dashboard', key: 'agenda' } as const, null)
 const chatLinks = atom({ plugin: 'pr-dashboard', key: 'chatLinks' } as const, {})
+// Past this many tokens in a chat's context, the band offers to compact it.
+const COMPACT_AT_TOKENS = 300_000
+const contextTokens = atom({ plugin: 'pr-dashboard', key: 'contextTokens' } as const, {})
 
 const toPr = (pr: GhPr): Pr => ({
   url: pr.url,
@@ -1070,6 +1073,16 @@ const refreshChatLinks = async ($: EngineInterface) => {
   await update($, chatLinks, bySession => ({ ...bySession, [session]: found }))
 }
 
+// Rejects while a turn runs; a hook may also veto it.
+const compactChat = async ($: EngineInterface) => {
+  try {
+    const result = await $.session.compact()
+    if ('skip' in result && result.skip) $.ui.toast(`Compact skipped: ${result.skip}`)
+  } catch {
+    $.ui.toast("Can't compact while Claude is working")
+  }
+}
+
 const WRITING_TOOLS = new Set(['Edit', 'Write', 'NotebookEdit', 'Bash'])
 // Polling starts once something draws: at session start under the terminal REPL, else on the
 // first band draw (the desktop app runs sessions through the SDK, which reports no surface at
@@ -1230,6 +1243,17 @@ export const register: Register = on => {
     return result
   })
 
+  // The engine measures the context after each turn; kept per chat, like the other per-chat rows.
+  on('session.measure', async ($, e, next) => {
+    const tokens = e.context.tokens
+    if (tokens !== undefined) {
+      const id = await sessionId($)
+      if ((await read($, contextTokens))[id] !== tokens) await update($, contextTokens, bySession => ({ ...bySession, [id]: tokens }))
+    }
+
+    return next(e)
+  })
+
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     // A surface is drawing: start polling, from a timer since a draw may not write state.
     if (!isStarted) $.clock.after(0, () => void start($))
@@ -1238,6 +1262,7 @@ export const register: Register = on => {
     const now = await $.clock.now()
     const meetings = ((await read($, agenda)) ?? []).filter(meeting => meeting.end > now)
     const links = (await read($, chatLinks))[await sessionId($)] ?? []
+    const tokens = (await read($, contextTokens))[await sessionId($)] ?? 0
     const { Box, Button, Link, Markdown, Text } = $.ui.resolve(e)
     const linkItems = [
       ...links.slice(0, MAX_LINKS_SHOWN).map(link => (
@@ -1254,7 +1279,12 @@ export const register: Register = on => {
         : []),
     ]
     // Uncommitted shows on its own while the PR data is still on its way.
-    if (e.props.hasSurvey || (snap === null && changed.length === 0 && meetings.length === 0 && links.length === 0)) return next(e)
+    const isCompactWanted = tokens > COMPACT_AT_TOKENS
+    if (
+      e.props.hasSurvey ||
+      (snap === null && changed.length === 0 && meetings.length === 0 && links.length === 0 && !isCompactWanted)
+    )
+      return next(e)
 
     const isPrsHidden = await read($, isHidden)
     const events = snap ? await read($, fresh) : []
@@ -1271,8 +1301,17 @@ export const register: Register = on => {
     const workTree = await workTreeOf($)
     const { added, deleted } = totalsOf(changed)
 
+    const compactButton = isCompactWanted && (
+      <Box key="compact-box" flexShrink={0}>
+        <Button key="compact" plain onPress={() => void compactChat($)}>
+          <Text color="warning">🗜 compact {Math.round(tokens / 1000)}k</Text>
+        </Button>
+      </Box>
+    )
+
     return (
       <Box flexDirection="column">
+        {compactButton}
         {snap && isPrsHidden && (
           <Button key="show" plain onPress={() => update($, isHidden, () => false)}>
             <Text dimColor size="caption">▸ PRs</Text>

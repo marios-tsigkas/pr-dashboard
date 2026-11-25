@@ -7,6 +7,7 @@ A Claude Code mod that shows, above the prompt, your GitHub PRs for the session'
 - **Calendar:** today's next meetings (up to three, then "+N more"), each with its video link (↗), the next one amber within 15 minutes. Refreshed every 5 minutes. Needs the Google Calendar connector; see [Calendar](#calendar).
 - **Links:** Asana (☑), Figma (🎨), Confluence (📘) and Claude artifact (✳️) links from this chat and from the branch PR's description, newest first.
 - **Uncommitted:** changed files with +/− lines. Click a file, ⧉ or `/changes` for a side pane with each file's diff.
+- **Compact:** past 300k tokens of context, a 🗜 button compacts the chat (same as `/compact`).
 
 ## Install
 

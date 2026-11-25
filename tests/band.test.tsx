@@ -1093,3 +1093,32 @@ test('links in the description of the branch PR show after the chat ones; those 
   const links = (await ui.findAll({ type: 'Link' })).map(l => l.text ?? '').map(text => text.replace(/^https:\S+?(?=(☑|🎨|📘|✳️) )/, '')).filter(text => /^(☑|🎨|📘|✳️) /.test(text))
   expect(links).toEqual(['☑ task …999999', '🎨 Card Duration'])
 })
+
+test('past 300k tokens of context the band offers to compact; pressing it compacts', async ($, on) => {
+  const clock = mock.clock(on)
+  mock.store(on)
+  fakeGh(on, { reviews: [], mine: [] })
+  let compacted = 0
+  on('session.compact', () => {
+    compacted++
+    return { skip: 'test' }
+  })
+  on('session.measure', () => ({ changed: [] }))
+  const toasts: string[] = []
+  on("ui.toast", ($, e) => {
+    toasts.push(e.text)
+    return { value: undefined }
+  })
+
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  await clock.advance(1)
+  await $.session.measure({ context: { tokens: 250_000, window: 1_000_000 }, rateLimits: [] })
+  const ui = await $.ui.mount({ plugin: 'pr-dashboard', surface: 'desktop', ...BAND })
+  expect(await ui.find({ key: 'compact' })).toBeUndefined()
+
+  await $.session.measure({ context: { tokens: 312_400, window: 1_000_000 }, rateLimits: [] })
+  expect(await ui.find({ type: 'Text', text: '🗜 compact 312k' })).toBeDefined()
+  await ui.press({ key: 'compact' })
+  expect(compacted).toBe(1)
+  expect(toasts).toEqual(['Compact skipped: test'])
+})
